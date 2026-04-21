@@ -2,15 +2,16 @@
 
 Проект для двух режимов разработки:
 
-- **Домашний режим**: отладка кинематики и потока команд через **RViz**.
-- **Лабораторный режим**: запуск упрощённой видимой модели в **Gazebo Classic**.
+- **Домашний режим** — отладка кинематики и потока команд через **RViz**.
+- **Лабораторный режим** — запуск упрощённой модели в **Gazebo Classic**.
 
-Основная идея проекта:
+Цель проекта:
 
 1. Получить позу оператора из MediaPipe.
 2. Преобразовать landmarks в углы суставов H1.
 3. Публиковать команды верхней части тела через ROS 2.
 4. Проверять движение сначала в RViz, затем в Gazebo.
+5. Позже переключить тот же пайплайн на реального Unitree H1.
 
 ---
 
@@ -55,8 +56,8 @@ h1_teleop_project/
 
 ROS 2 пакет с двумя вариантами модели:
 
-- `h1.urdf` — упрощённая видимая модель для **RViz**.
-- `h1_gazebo_light.urdf` — облегчённая видимая модель для **Gazebo**.
+- `h1.urdf` — модель для **RViz**.
+- `h1_gazebo_light.urdf` — облегчённая модель для **Gazebo**, чтобы не ловить зависания на слабом железе.
 
 ### `h1_teleop_test`
 
@@ -74,7 +75,7 @@ ROS 2 пакет с двумя вариантами модели:
 
 ### `docker/`
 
-Контейнер с ROS 2 Humble, Gazebo Classic, RViz, colcon и утилитами для сборки.
+Контейнер с ROS 2 Humble, Gazebo Classic, RViz, colcon и базовыми утилитами для сборки.
 
 ### `scripts/check_host.sh`
 
@@ -83,29 +84,31 @@ ROS 2 пакет с двумя вариантами модели:
 - установлен ли Docker
 - работает ли Docker daemon
 - есть ли `docker compose`
-- есть ли `nvidia-smi`
+- есть ли GPU и `nvidia-smi`
 - доступен ли X11/Wayland
 - установлен ли `xhost`
+- установлен ли ROS 2 / Gazebo на хосте (необязательно, просто для информации)
 
 ---
 
-## 3. Быстрый сценарий работы
+## 3. Два режима работы
 
 ### Дом
 
-Используй только RViz:
+Используй **только RViz**:
 
 - меньше нагрузка
 - не нужна мощная видеокарта
 - удобно отлаживать цепочку `команды -> суставы`
+- можно запускать даже при софтварном OpenGL
 
 ### Лаборатория
 
-Используй Gazebo:
+Используй **Gazebo Classic**:
 
-- нужен ноутбук/ПК помощнее
-- удобно показывать "симуляцию робота"
-- можно демонстрировать видимую модель в мире Gazebo
+- нужен ноутбук или ПК помощнее
+- удобно показывать симуляцию
+- можно отлаживать более полный pipeline
 
 ---
 
@@ -118,14 +121,16 @@ chmod +x scripts/check_host.sh
 ./scripts/check_host.sh
 ```
 
-Что желательно увидеть:
+Минимально желательно увидеть:
 
-- `docker: FOUND`
-- `docker compose: FOUND`
+- Docker установлен
+- `docker compose` работает
 - Docker daemon активен
-- пользователь в группе `docker` или ты готов запускать через `sudo`
+- пользователь в группе `docker` или ты готов запускать команды через `sudo`
 - `DISPLAY` не пустой
 - `xhost` установлен
+
+Если `nvidia-smi` не найден, это **не ошибка**. Просто дома лучше использовать режим RViz.
 
 ---
 
@@ -149,19 +154,21 @@ docker compose version
 
 ---
 
-## 6. Разрешение X11 для GUI из контейнера
+## 6. Разрешение GUI из контейнера
 
-На хосте перед первым запуском:
+Перед первым запуском на хосте:
 
 ```bash
 xhost +local:docker
 ```
 
-После работы можно закрыть доступ:
+После завершения работы можно вернуть ограничения:
 
 ```bash
 xhost -local:docker
 ```
+
+> На Ubuntu с **Wayland** GUI из контейнера иногда работает нестабильно. Для домашнего режима это обычно лечится переменной `LIBGL_ALWAYS_SOFTWARE=1`.
 
 ---
 
@@ -175,48 +182,58 @@ docker compose build
 
 ---
 
-## 8. Запуск контейнера
+## 8. Базовая сборка workspace в контейнере
 
 ```bash
-docker compose run --rm h1-dev
+docker compose run --rm h1-dev bash -lc "
+  source /opt/ros/humble/setup.bash &&
+  cd /workspaces/h1_teleop_ws &&
+  colcon build &&
+  source install/setup.bash
+"
 ```
 
-Внутри контейнера:
-
-```bash
-source /opt/ros/humble/setup.bash
-cd /workspaces/h1_teleop_ws
-colcon build
-source install/setup.bash
-```
+> Если `colcon` ругается на `h1_teleop_test` про marker/package.xml, это пока предупреждение, а не блокирующая ошибка.
 
 ---
 
 ## 9. Домашний режим: RViz
 
-### Терминал 1 внутри контейнера
+### Терминал 1 на хосте
 
 ```bash
-source /opt/ros/humble/setup.bash
-cd /workspaces/h1_teleop_ws
-colcon build
-source install/setup.bash
-ros2 launch h1_description_ros2 display.launch.py
+xhost +local:docker
 ```
 
-### Терминал 2 внутри контейнера
+### Терминал 2 на хосте — запуск RViz
 
 ```bash
-source /opt/ros/humble/setup.bash
-cd /workspaces/h1_teleop_ws
-source install/setup.bash
-ros2 run h1_teleop_test upper_body_cmd_pub
+docker compose run --rm h1-dev bash -lc "
+  export LIBGL_ALWAYS_SOFTWARE=1 &&
+  export QT_X11_NO_MITSHM=1 &&
+  source /opt/ros/humble/setup.bash &&
+  cd /workspaces/h1_teleop_ws &&
+  colcon build &&
+  source install/setup.bash &&
+  ros2 launch h1_description_ros2 display.launch.py
+"
+```
+
+### Терминал 3 на хосте — запуск тестового publisher
+
+```bash
+docker compose run --rm h1-dev bash -lc "
+  source /opt/ros/humble/setup.bash &&
+  cd /workspaces/h1_teleop_ws &&
+  source install/setup.bash &&
+  ros2 run h1_teleop_test upper_body_cmd_pub
+"
 ```
 
 Ожидаемый результат:
 
 - открывается RViz
-- видна упрощённая модель H1
+- видна модель H1
 - плечи, локти и корпус двигаются
 
 ---
@@ -226,17 +243,26 @@ ros2 run h1_teleop_test upper_body_cmd_pub
 Перед запуском желательно закрыть старые процессы Gazebo:
 
 ```bash
+chmod +x scripts/kill_gazebo.sh
 ./scripts/kill_gazebo.sh
 ```
 
-### Терминал 1 внутри контейнера
+### Терминал 1 на хосте
 
 ```bash
-source /opt/ros/humble/setup.bash
-cd /workspaces/h1_teleop_ws
-colcon build
-source install/setup.bash
-ros2 launch h1_description_ros2 gazebo_light.launch.py
+xhost +local:docker
+```
+
+### Терминал 2 на хосте — запуск Gazebo
+
+```bash
+docker compose run --rm h1-dev bash -lc "
+  source /opt/ros/humble/setup.bash &&
+  cd /workspaces/h1_teleop_ws &&
+  colcon build &&
+  source install/setup.bash &&
+  ros2 launch h1_description_ros2 gazebo_light.launch.py
+"
 ```
 
 Ожидаемый результат:
@@ -245,13 +271,87 @@ ros2 launch h1_description_ros2 gazebo_light.launch.py
 - в левой панели `Models` появляется `unitree_h1_light`
 - Gazebo не зависает
 
-> Примечание: сейчас Gazebo-версия — упрощённая и нужна для устойчивой отладки на слабом или среднем железе.
+> В текущей реализации Gazebo-модель облегчённая. Это сделано специально, чтобы на слабом железе не ловить зависания из-за тяжёлых visual meshes.
 
 ---
 
-## 11. Как запускать на мощной машине с GPU
+## 11. Что делать, если контейнерный RViz не запускается
 
-Если на лабораторной машине установлен NVIDIA Container Toolkit, можно запускать контейнер так:
+### Проблема 1: `parent link [world] of joint [floating_base_joint] not found`
+
+Причина: в `h1.urdf` есть `floating_base_joint`, но не определён link `world`.
+
+Исправление:
+
+```bash
+python3 - <<'PY'
+from pathlib import Path
+
+p = Path('src/h1_description_ros2/urdf/h1.urdf')
+text = p.read_text(encoding='utf-8')
+
+if '<link name="world"/>' not in text and '<link name="world" />' not in text:
+    start = text.find('<robot')
+    start = text.find('>', start)
+    text = text[:start+1] + '\n  <link name="world"/>\n' + text[start+1:]
+
+p.write_text(text, encoding='utf-8')
+print('patched', p)
+PY
+```
+
+Потом пересобери workspace:
+
+```bash
+docker compose run --rm h1-dev bash -lc "
+  source /opt/ros/humble/setup.bash &&
+  cd /workspaces/h1_teleop_ws &&
+  colcon build
+"
+```
+
+### Проблема 2: `MESA`, `glx`, `iris`, `Failed to query drm device`
+
+Это частая история для контейнера под Wayland/встроенную графику.
+
+Попробуй запускать RViz так:
+
+```bash
+docker compose run --rm h1-dev bash -lc "
+  export LIBGL_ALWAYS_SOFTWARE=1 &&
+  export QT_X11_NO_MITSHM=1 &&
+  source /opt/ros/humble/setup.bash &&
+  cd /workspaces/h1_teleop_ws &&
+  source install/setup.bash &&
+  ros2 launch h1_description_ros2 display.launch.py
+"
+```
+
+### Проблема 3: Gazebo пишет `Address already in use`
+
+Остался старый `gzserver`.
+
+Исправление:
+
+```bash
+./scripts/kill_gazebo.sh
+```
+
+Если не помогло:
+
+```bash
+pkill -9 -f gzserver || true
+pkill -9 -f gzclient || true
+pkill -9 -f "gazebo --verbose" || true
+```
+
+---
+
+## 12. Запуск на мощной машине с GPU
+
+Если на лабораторной машине установлен NVIDIA Container Toolkit, можно использовать GPU passthrough.
+
+Пример отдельного запуска:
 
 ```bash
 docker run --rm -it \
@@ -271,9 +371,7 @@ docker run --rm -it \
 
 ---
 
-## 12. Что добавить следующим шагом
-
-Следующие логические блоки проекта:
+## 13. Следующие пакеты, которые стоит добавить
 
 ### `h1_pose_mapper`
 
@@ -281,7 +379,7 @@ docker run --rm -it \
 
 - принимать landmarks из MediaPipe
 - оценивать углы плеч, локтей и корпуса
-- публиковать `JointState` или свой тип сообщения для H1
+- публиковать `JointState` или отдельное сообщение для H1
 
 ### `h1_filters`
 
@@ -299,7 +397,7 @@ docker run --rm -it \
 - Gazebo-режимом
 - реальным роботом через Unitree ROS 2 API
 
-Это даст красивую архитектуру для ВКР:
+Архитектура проекта в итоге:
 
 ```text
 MediaPipe -> Pose Mapper -> Filters/Safety -> Robot Bridge -> RViz / Gazebo / Real H1
@@ -307,7 +405,7 @@ MediaPipe -> Pose Mapper -> Filters/Safety -> Robot Bridge -> RViz / Gazebo / Re
 
 ---
 
-## 13. Рекомендуемый git workflow
+## 14. Рекомендуемый git workflow
 
 ```bash
 git init
@@ -319,34 +417,32 @@ git push -u origin main
 
 ---
 
-## 14. Типовой цикл работы
+## 15. Типовой цикл работы
 
 ### Дома
 
 1. `./scripts/check_host.sh`
 2. `xhost +local:docker`
 3. `docker compose build`
-4. `docker compose run --rm h1-dev`
-5. `colcon build`
-6. запуск `display.launch.py`
-7. запуск `upper_body_cmd_pub`
+4. контейнерный `colcon build`
+5. запуск `display.launch.py`
+6. запуск `upper_body_cmd_pub`
 
 ### В лаборатории
 
 1. `./scripts/check_host.sh`
 2. `xhost +local:docker`
 3. `docker compose build`
-4. `docker compose run --rm h1-dev`
-5. `colcon build`
-6. `./scripts/kill_gazebo.sh`
-7. запуск `gazebo_light.launch.py`
+4. контейнерный `colcon build`
+5. `./scripts/kill_gazebo.sh`
+6. запуск `gazebo_light.launch.py`
 
 ---
 
-## 15. Важные замечания
+## 16. Важные замечания
 
-- Gazebo может зависать на тяжёлых mesh-моделях без хорошей графики.
-- Поэтому для отладки лучше держать **облегчённую Gazebo-модель**.
-- Для домашнего режима RViz достаточно и обычно устойчивее.
-- Для демонстрации в лаборатории удобнее Gazebo.
-
+- Дома основной режим — **RViz**.
+- Gazebo дома можно запускать, но он не является обязательным.
+- В лаборатории основной режим — **Gazebo**.
+- Если тяжёлые модели снова начнут вешать Gazebo, лучше оставить облегчённую модель и отлаживать управление, а не графику.
+- Для ВКР важнее устойчивый pipeline `MediaPipe -> углы -> ROS 2 -> H1`, чем тяжёлый фотореалистичный рендер.
