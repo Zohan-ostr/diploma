@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <robot name="unitree_h1_simplified">
+  <link name="world"/>
+
   <link name="pelvis">
     <visual>
       <origin xyz="0 0 0.9" rpy="0 0 0"/>
