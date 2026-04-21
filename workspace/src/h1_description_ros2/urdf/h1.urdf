@@ -1,0 +1,151 @@
+<?xml version="1.0" encoding="utf-8"?>
+<robot name="unitree_h1_simplified">
+  <link name="pelvis">
+    <visual>
+      <origin xyz="0 0 0.9" rpy="0 0 0"/>
+      <geometry><box size="0.28 0.18 0.18"/></geometry>
+      <material name="Gray"><color rgba="0.7 0.7 0.7 1.0"/></material>
+    </visual>
+  </link>
+
+  <joint name="floating_base_joint" type="fixed">
+    <parent link="world"/>
+    <child link="pelvis"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+
+  <link name="torso_link">
+    <visual>
+      <origin xyz="0 0 0.2" rpy="0 0 0"/>
+      <geometry><box size="0.24 0.16 0.30"/></geometry>
+      <material name="Blue"><color rgba="0.2 0.4 0.8 1.0"/></material>
+    </visual>
+  </link>
+  <joint name="torso_joint" type="revolute">
+    <parent link="pelvis"/>
+    <child link="torso_link"/>
+    <origin xyz="0 0 0.02" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-0.6" upper="0.6" effort="20" velocity="1.5"/>
+  </joint>
+
+  <link name="left_shoulder_pitch_link">
+    <visual>
+      <origin xyz="0 0 -0.12" rpy="0 0 0"/>
+      <geometry><cylinder radius="0.03" length="0.24"/></geometry>
+      <material name="Red"><color rgba="0.9 0.2 0.2 1.0"/></material>
+    </visual>
+  </link>
+  <joint name="left_shoulder_pitch_joint" type="revolute">
+    <parent link="torso_link"/>
+    <child link="left_shoulder_pitch_link"/>
+    <origin xyz="0 0.14 0.28" rpy="0 0 0"/>
+    <axis xyz="1 0 0"/>
+    <limit lower="-2.2" upper="2.2" effort="20" velocity="2.0"/>
+  </joint>
+
+  <link name="left_shoulder_roll_link">
+    <visual>
+      <origin xyz="0 0 -0.12" rpy="0 0 0"/>
+      <geometry><cylinder radius="0.028" length="0.24"/></geometry>
+      <material name="Green"><color rgba="0.2 0.9 0.2 1.0"/></material>
+    </visual>
+  </link>
+  <joint name="left_shoulder_roll_joint" type="revolute">
+    <parent link="left_shoulder_pitch_link"/>
+    <child link="left_shoulder_roll_link"/>
+    <origin xyz="0 0 -0.24" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-1.6" upper="1.6" effort="20" velocity="2.0"/>
+  </joint>
+
+  <link name="left_shoulder_yaw_link">
+    <visual>
+      <origin xyz="0 0 -0.10" rpy="0 0 0"/>
+      <geometry><cylinder radius="0.026" length="0.20"/></geometry>
+      <material name="Yellow"><color rgba="0.9 0.9 0.2 1.0"/></material>
+    </visual>
+  </link>
+  <joint name="left_shoulder_yaw_joint" type="revolute">
+    <parent link="left_shoulder_roll_link"/>
+    <child link="left_shoulder_yaw_link"/>
+    <origin xyz="0 0 -0.24" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-2.5" upper="2.5" effort="20" velocity="2.0"/>
+  </joint>
+
+  <link name="left_elbow_link">
+    <visual>
+      <origin xyz="0 0 -0.11" rpy="0 0 0"/>
+      <geometry><cylinder radius="0.022" length="0.22"/></geometry>
+      <material name="Cyan"><color rgba="0.2 0.8 0.8 1.0"/></material>
+    </visual>
+  </link>
+  <joint name="left_elbow_joint" type="revolute">
+    <parent link="left_shoulder_yaw_link"/>
+    <child link="left_elbow_link"/>
+    <origin xyz="0 0 -0.20" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-0.1" upper="2.4" effort="20" velocity="2.0"/>
+  </joint>
+
+  <link name="right_shoulder_pitch_link">
+    <visual>
+      <origin xyz="0 0 -0.12" rpy="0 0 0"/>
+      <geometry><cylinder radius="0.03" length="0.24"/></geometry>
+      <material name="Red2"><color rgba="0.9 0.2 0.2 1.0"/></material>
+    </visual>
+  </link>
+  <joint name="right_shoulder_pitch_joint" type="revolute">
+    <parent link="torso_link"/>
+    <child link="right_shoulder_pitch_link"/>
+    <origin xyz="0 -0.14 0.28" rpy="0 0 0"/>
+    <axis xyz="1 0 0"/>
+    <limit lower="-2.2" upper="2.2" effort="20" velocity="2.0"/>
+  </joint>
+
+  <link name="right_shoulder_roll_link">
+    <visual>
+      <origin xyz="0 0 -0.12" rpy="0 0 0"/>
+      <geometry><cylinder radius="0.028" length="0.24"/></geometry>
+      <material name="Green2"><color rgba="0.2 0.9 0.2 1.0"/></material>
+    </visual>
+  </link>
+  <joint name="right_shoulder_roll_joint" type="revolute">
+    <parent link="right_shoulder_pitch_link"/>
+    <child link="right_shoulder_roll_link"/>
+    <origin xyz="0 0 -0.24" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-1.6" upper="1.6" effort="20" velocity="2.0"/>
+  </joint>
+
+  <link name="right_shoulder_yaw_link">
+    <visual>
+      <origin xyz="0 0 -0.10" rpy="0 0 0"/>
+      <geometry><cylinder radius="0.026" length="0.20"/></geometry>
+      <material name="Yellow2"><color rgba="0.9 0.9 0.2 1.0"/></material>
+    </visual>
+  </link>
+  <joint name="right_shoulder_yaw_joint" type="revolute">
+    <parent link="right_shoulder_roll_link"/>
+    <child link="right_shoulder_yaw_link"/>
+    <origin xyz="0 0 -0.24" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-2.5" upper="2.5" effort="20" velocity="2.0"/>
+  </joint>
+
+  <link name="right_elbow_link">
+    <visual>
+      <origin xyz="0 0 -0.11" rpy="0 0 0"/>
+      <geometry><cylinder radius="0.022" length="0.22"/></geometry>
+      <material name="Cyan2"><color rgba="0.2 0.8 0.8 1.0"/></material>
+    </visual>
+  </link>
+  <joint name="right_elbow_joint" type="revolute">
+    <parent link="right_shoulder_yaw_link"/>
+    <child link="right_elbow_link"/>
+    <origin xyz="0 0 -0.20" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-0.1" upper="2.4" effort="20" velocity="2.0"/>
+  </joint>
+</robot>

@@ -1,0 +1,23 @@
+services:
+  h1-dev:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    container_name: h1-dev
+    network_mode: host
+    ipc: host
+    stdin_open: true
+    tty: true
+    environment:
+      DISPLAY: ${DISPLAY}
+      QT_X11_NO_MITSHM: "1"
+      XDG_RUNTIME_DIR: ${XDG_RUNTIME_DIR:-/tmp/runtime-chatgpt}
+      LIBGL_ALWAYS_SOFTWARE: ${LIBGL_ALWAYS_SOFTWARE:-0}
+      NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-all}
+      NVIDIA_DRIVER_CAPABILITIES: ${NVIDIA_DRIVER_CAPABILITIES:-all}
+    volumes:
+      - ./:/workspaces/h1_teleop_ws
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - ${XDG_RUNTIME_DIR:-/tmp/runtime-chatgpt}:${XDG_RUNTIME_DIR:-/tmp/runtime-chatgpt}
+    working_dir: /workspaces/h1_teleop_ws
+    command: bash
