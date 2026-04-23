@@ -1,0 +1,5 @@
+camera_name: right
+K: [fx, 0, cx, 0, fy, cy, 0, 0, 1]
+D: [k1, k2, p1, p2, k3]
+image_width: 0
+image_height: 0

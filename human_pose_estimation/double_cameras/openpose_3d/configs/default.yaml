@@ -1,0 +1,28 @@
+method_name: openpose_3d
+sessions_dir: ../../videos/double_cameras
+models_dir: ./models
+runs_dir: ./runs
+
+arm_len_ref_m: 0.249
+
+double_cameras:
+  device: cpu
+  stride: 1
+  max_frames: 0
+  sync_mode: frame_aligned
+  frame_offset_right: 0
+
+model:
+  backend: openpose_3d
+  model_name: openpose_3d_reconstruction
+  person_limit: 1
+
+calibration:
+  required_files:
+    - intrinsics_left.yaml
+    - intrinsics_right.yaml
+    - extrinsics.yaml
+    - stereo.yaml
+
+run_names:
+  baseline: run

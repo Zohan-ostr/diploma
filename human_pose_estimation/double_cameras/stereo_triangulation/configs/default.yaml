@@ -1,0 +1,28 @@
+method_name: stereo_triangulation
+sessions_dir: ../../videos/double_cameras
+models_dir: ./models
+runs_dir: ./runs
+
+arm_len_ref_m: 0.249
+
+double_cameras:
+  device: cpu
+  stride: 1
+  max_frames: 0
+  sync_mode: frame_aligned
+  frame_offset_right: 0
+  triangulation_backend: opencv_triangulatePoints
+
+pose2d:
+  backend: mediapipe_2d
+  confidence_threshold: 0.3
+
+calibration:
+  required_files:
+    - intrinsics_left.yaml
+    - intrinsics_right.yaml
+    - extrinsics.yaml
+    - stereo.yaml
+
+run_names:
+  baseline: run
