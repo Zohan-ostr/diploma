@@ -1,34 +1,51 @@
-# media_pipe (reworked)
+# media_pipe
 
-Reworked MediaPipe package for the new project standard:
+Переработанный проект MediaPipe под единый стандарт для `human_pose_estimation/single_camera/media_pipe`.
 
-- `configs/` – configuration placeholders
-- `models/` – MediaPipe `.task` models
-- `scripts/benchmark.py` – baseline run
-- `scripts/benchmark_opt.py` – optimized torso+arms run
-- `scripts/analyze_results.py` – result analysis
-- `scripts/playback_3d.py` – 3D playback
-- `runs/` – outputs (`run`, `run_opt`, `compare_out`)
-
-## Expected video location
-
-The scripts are configured for videos under:
-
+## Вход
+Видео лежат в:
 `../../videos/single_camera`
 
-relative to this folder.
+Модели лежат в:
+`./models`
 
-## Quick start
+## Основные команды
 
+Скачать модели:
 ```bash
-python -m pip install -r requirements.txt
+python scripts/download_models.py
+```
+
+Полный прогон:
+```bash
 python scripts/benchmark.py
+```
+
+Оптимизированный прогон:
+```bash
 python scripts/benchmark_opt.py
+```
+
+Анализ:
+```bash
 python scripts/analyze_results.py
+```
+
+3D playback:
+```bash
 python scripts/playback_3d.py
 ```
 
-## Note
+## Основные метрики
+- effective_fps
+- detection_rate
+- mean_visibility
+- mean_presence
+- jitter_world_m_mean
+- jitter_world_m_p95
+- left_upper_arm_len_m_mean
+- left_upper_arm_abs_error_m_mean
+- left_upper_arm_rel_error_mean_pct
 
-This archive is a migration scaffold for the `media_pipe` part of the new
-`human_pose_estimation/single_camera` structure.
+## arm_len_ref_m
+Это эталонная длина руки от `left_shoulder` до `left_elbow`, задаётся в `configs/default.yaml`.

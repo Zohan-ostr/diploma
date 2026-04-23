@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""Placeholder for common-schema export. Current benchmark scripts already produce CSV/JSON under runs/."""
-print('Use scripts/benchmark.py or scripts/benchmark_opt.py to generate result files in runs/.')
+from pathlib import Path
+
+def main():
+    project_root = Path(__file__).resolve().parents[1]
+    print(f'Nothing to export. Current schema is already standardised under: {project_root / "runs"}')
+
+if __name__ == '__main__':
+    main()

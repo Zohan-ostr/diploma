@@ -1,3 +1,21 @@
-/media_pipe/videos/*
+# =========================
+# Human Pose Estimation
+# =========================
 
-/media_pipe/runs/*
+# Ignore contents of all runs/ folders, but keep folder structure
+human_pose_estimation/**/runs/**
+!human_pose_estimation/**/runs/
+!human_pose_estimation/**/runs/**/
+!human_pose_estimation/**/runs/.gitkeep
+!human_pose_estimation/**/runs/**/.gitkeep
+
+# Ignore contents of all models/ folders, but keep folder structure
+human_pose_estimation/**/models/**
+!human_pose_estimation/**/models/
+!human_pose_estimation/**/models/**/
+!human_pose_estimation/**/models/.gitkeep
+!human_pose_estimation/**/models/**/.gitkeep
+
+# Ignore all video files inside videos/
+human_pose_estimation/videos/**/*.mp4
+human_pose_estimation/videos/**/**/*.mp4
