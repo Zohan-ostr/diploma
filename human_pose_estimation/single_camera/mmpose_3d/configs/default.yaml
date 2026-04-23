@@ -1,0 +1,22 @@
+method_name: mmpose_3d
+videos_dir: ../../videos/single_camera
+models_dir: ./models
+runs_dir: ./runs
+
+arm_len_ref_m: 0.249
+
+single_camera:
+  device: cpu
+  stride: 1
+  max_frames: 0
+  detector_conf_thr: 0.5
+  keypoint_conf_thr: 0.3
+
+model:
+  backend: mmpose
+  detector_name: person_detector
+  pose2d_name: human_pose_2d
+  pose3d_name: human_pose_3d_lifter
+
+run_names:
+  baseline: run

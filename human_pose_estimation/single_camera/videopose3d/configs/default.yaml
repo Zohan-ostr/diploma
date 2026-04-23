@@ -1,0 +1,22 @@
+method_name: videopose3d
+videos_dir: ../../videos/single_camera
+models_dir: ./models
+runs_dir: ./runs
+input_2d_dir: ./input_2d
+output_3d_dir: ./output_3d
+
+arm_len_ref_m: 0.249
+
+single_camera:
+  device: cpu
+  stride: 1
+  max_frames: 0
+  keypoint_conf_thr: 0.3
+
+pipeline:
+  pose2d_backend: mmpose_2d
+  pose3d_backend: videopose3d
+  temporal_window: 243
+
+run_names:
+  baseline: run
