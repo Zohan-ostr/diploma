@@ -2,10 +2,10 @@
 # -*- coding: utf-8 -*-
 
 """
-play_pose3d_matplotlib.py
+scripts/playback_3d.py
 
 Запуск:
-  python3 play_pose3d_matplotlib.py
+  python3 scripts/playback_3d.py
 
 Что делает:
 - Позволяет выбрать, с какой папкой результатов работать (например: runs или run_opt)

@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 """
-analyze_runs.py
+scripts/analyze_results.py
 
 Анализ результатов MediaPipe Pose Landmarker (runs/run_opt и т.п.)
 
@@ -16,10 +16,10 @@ analyze_runs.py
 - Считает "дрожание" суставов (variance/std по 3D координатам + jitter/velocity/jerk).
 
 Запуск:
-  python3 analyze_runs.py --root . --out_dir analysis_out
+  python3 scripts/analyze_results.py --root . --out_dir analysis_out
 
 Типичный пример:
-  python3 analyze_runs.py --root /home/zohan/diploma/media_pipe --out_dir analysis_out
+  python3 scripts/analyze_results.py --root /home/zohan/diploma/media_pipe --out_dir analysis_out
 
 Параметры:
   --root         где искать папки results (runs, run_opt и т.п.)

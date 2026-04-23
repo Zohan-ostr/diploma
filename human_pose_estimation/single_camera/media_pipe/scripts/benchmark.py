@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 """
-mp_pose_research.py — исследовательский/бенчмарк-инструмент для MediaPipe Pose Landmarker.
+scripts/benchmark.py — исследовательский/бенчмарк-инструмент для MediaPipe Pose Landmarker.
 
 Что умеет:
 - Скачать официальные модели pose_landmarker_{lite,full,heavy}.task (опционально)
@@ -1048,7 +1048,7 @@ def cmd_webcam(args: argparse.Namespace) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="mp_pose_research.py",
+        prog="scripts/benchmark.py",
         description="MediaPipe Pose Landmarker research tool (models/metrics/2D+3D outputs)."
     )
     sub = p.add_subparsers(dest="cmd", required=False)
@@ -1117,7 +1117,7 @@ def main() -> None:
     # If no subcommand is provided, run default benchmark-videos with your standard parameters.
     if getattr(args, "cmd", None) is None:
         # Equivalent to:
-        # python3 mp_pose_research.py benchmark-videos \
+        # python3 scripts/benchmark.py benchmark-videos \
         #   --videos_dir videos \
         #   --model_dir models \
         #   --out_dir runs \

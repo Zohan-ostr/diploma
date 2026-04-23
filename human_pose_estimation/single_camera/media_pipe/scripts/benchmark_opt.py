@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 """
-mp_pose_research_opt.py
+scripts/benchmark_opt.py
 
 Оптимизированный прогон MediaPipe Pose Landmarker под твои требования:
 
@@ -10,7 +10,7 @@ mp_pose_research_opt.py
 - Без --render_2d, без segmentation
 - Сохраняем ТОЛЬКО точки торса и рук (без ног и лица)
 - Всё сохраняем в папку run_opt (чтобы runs не трогать)
-- Запуск по умолчанию: python3 mp_pose_research_opt.py
+- Запуск по умолчанию: python3 scripts/benchmark_opt.py
 
 Зависимости:
   python -m pip install mediapipe opencv-python numpy tqdm
@@ -441,9 +441,9 @@ def run_on_video_opt(video_path: Path,
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--videos_dir", default="videos", help="Folder with videos")
+    ap.add_argument("--videos_dir", default="../../videos/single_camera", help="Folder with videos")
     ap.add_argument("--model_dir", default="models", help="Folder with .task models")
-    ap.add_argument("--out_dir", default="run_opt", help="Output root folder (default: run_opt)")
+    ap.add_argument("--out_dir", default="runs/run_opt", help="Output root folder (default: run_opt)")
     ap.add_argument("--delegate", choices=["CPU", "GPU"], default="CPU")
     ap.add_argument("--stride", type=int, default=1)
     ap.add_argument("--max_frames", type=int, default=0)

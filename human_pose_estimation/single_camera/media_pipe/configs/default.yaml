@@ -1,0 +1,18 @@
+method_name: media_pipe
+videos_dir: ../../videos/single_camera
+models_dir: ./models
+runs_dir: ./runs
+arm_len_ref_m: 0.249
+single_camera:
+  delegate: CPU
+  running_mode: VIDEO
+  stride: 1
+  max_frames: 0
+  num_poses: 1
+  min_pose_detection_confidence: 0.5
+  min_pose_presence_confidence: 0.5
+  min_tracking_confidence: 0.5
+  occlusion_thr: 0.5
+run_names:
+  baseline: run
+  optimized: run_opt
