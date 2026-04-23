@@ -1,0 +1,25 @@
+version: "3.9"
+
+services:
+  hpe_runtime:
+    build:
+      context: ..
+      dockerfile: human_pose_estimation/docker/Dockerfile
+    container_name: hpe_runtime
+    working_dir: /workspace
+    volumes:
+      - ..:/workspace
+    tty: true
+    stdin_open: true
+
+  openpose_runtime:
+    build:
+      context: ..
+      dockerfile: human_pose_estimation/docker/Dockerfile.openpose
+    container_name: openpose_runtime
+    working_dir: /workspace
+    volumes:
+      - ..:/workspace
+    tty: true
+    stdin_open: true
+    profiles: ["openpose"]

@@ -1,0 +1,28 @@
+FROM nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    wget \
+    curl \
+    unzip \
+    ffmpeg \
+    python3 \
+    python3-pip \
+    python3-venv \
+    build-essential \
+    cmake \
+    libopencv-dev \
+    libgoogle-glog-dev \
+    libgflags-dev \
+    libatlas-base-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /workspace/human_pose_estimation
+
+COPY docker/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["bash"]
