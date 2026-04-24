@@ -23,12 +23,10 @@ WORKDIR /workspace/human_pose_estimation
 COPY docker/requirements-base.txt /tmp/requirements-base.txt
 COPY docker/requirements-hpe.txt /tmp/requirements-hpe.txt
 COPY docker/requirements-mmpose.txt /tmp/requirements-mmpose.txt
-COPY docker/requirements-yolo.txt /tmp/requirements-yolo.txt
 
 RUN python -m pip install --upgrade pip setuptools wheel && \
     python -m pip install -r /tmp/requirements-base.txt && \
     python -m pip install -r /tmp/requirements-hpe.txt && \
-    python -m pip install -r /tmp/requirements-yolo.txt
 
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh

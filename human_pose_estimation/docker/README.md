@@ -3,14 +3,13 @@
 Заготовка папки `human_pose_estimation/docker` для запуска алгоритмов через контейнеры.
 
 ## Файлы
-- `Dockerfile` — базовый контейнер для Python / MediaPipe / YOLO / ONNX
+- `Dockerfile` — базовый контейнер для Python / MediaPipe / ONNX
 - `Dockerfile.openpose` — отдельный контейнер под OpenPose
 - `docker-compose.yml` — запуск контейнеров
 - `entrypoint.sh` — общий entrypoint
 - `requirements-base.txt` — общие Python-зависимости
 - `requirements-hpe.txt` — зависимости для HPE-базовых методов
 - `requirements-mmpose.txt` — место под OpenMMLab stack
-- `requirements-yolo.txt` — зависимости для YOLO / PyTorch
 
 ## Быстрый старт
 
