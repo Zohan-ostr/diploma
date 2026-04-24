@@ -18,7 +18,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config \
     && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /workspace/human_pose_estimation
+WORKDIR /workspace
 
 COPY docker/requirements-base.txt /tmp/requirements-base.txt
 COPY docker/requirements-hpe.txt /tmp/requirements-hpe.txt
@@ -26,7 +26,7 @@ COPY docker/requirements-mmpose.txt /tmp/requirements-mmpose.txt
 
 RUN python -m pip install --upgrade pip setuptools wheel && \
     python -m pip install -r /tmp/requirements-base.txt && \
-    python -m pip install -r /tmp/requirements-hpe.txt && \
+    python -m pip install -r /tmp/requirements-hpe.txt
 
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
