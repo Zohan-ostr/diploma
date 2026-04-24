@@ -1,0 +1,2 @@
+set_name,method,video_or_session,model,mode,delegate,frames_total,frames_processed,effective_fps,detection_rate,mean_visibility,mean_presence,jitter_world_m_mean,jitter_world_m_p95,arm_len_ref_m,left_upper_arm_len_m_mean,left_upper_arm_len_m_std,left_upper_arm_abs_error_m_mean,left_upper_arm_abs_error_m_p95,left_upper_arm_rel_error_mean_pct
+run,media_pipe,front_stay.mp4,pose_landmarker_full,VIDEO,CPU,1800,1800,28.5,0.998,0.987,0.992,0.0045,0.0082,0.249,0.248,0.006,0.005,0.012,2.01
