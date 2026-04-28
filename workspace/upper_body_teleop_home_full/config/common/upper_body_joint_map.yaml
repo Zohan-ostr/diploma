@@ -1,0 +1,13 @@
+upper_body_joints:
+  - torso_joint
+  - left_shoulder_pitch_joint
+  - left_shoulder_roll_joint
+  - left_shoulder_yaw_joint
+  - left_elbow_joint
+  - right_shoulder_pitch_joint
+  - right_shoulder_roll_joint
+  - right_shoulder_yaw_joint
+  - right_elbow_joint
+note: >
+  Full robot is always loaded. Home mode controls only upper-body joints.
+  Legs are not commanded by this pipeline.

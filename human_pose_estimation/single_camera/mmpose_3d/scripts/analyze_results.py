@@ -4,21 +4,18 @@ from __future__ import annotations
 
 import csv
 from pathlib import Path
-from typing import List, Dict
+from typing import Dict, List
 import numpy as np
 import matplotlib.pyplot as plt
 
 def safe_mkdir(p: Path) -> None:
     p.mkdir(parents=True, exist_ok=True)
 
-def short_model_name(model_name: str) -> str:
-    return model_name.replace("pose_landmarker_", "").replace("pose_landmarker", "").strip("_")
-
 def short_video_name(video_name: str) -> str:
     return Path(video_name).stem
 
 def short_label(video_name: str, model_name: str) -> str:
-    return f"{short_video_name(video_name)}|{short_model_name(model_name)}"
+    return f"{short_video_name(video_name)}|{model_name}"
 
 def load_summary_csv(path: Path) -> List[dict]:
     if not path.exists():
@@ -84,16 +81,8 @@ def main():
     save_bar(labels, [to_float(r["effective_fps"]) for r in rows], "Mean FPS by each video/model", "FPS", out_dir / "fps_by_video_and_model.png")
     save_bar(labels, [to_float(r["mean_visibility"]) for r in rows], "Mean visibility by each video/model", "Visibility", out_dir / "visibility_by_video_model.png")
     save_bar(labels, [to_float(r["mean_presence"]) for r in rows], "Mean presence by each video/model", "Presence", out_dir / "presence_by_video_model.png")
-
-    for metric, title, filename, ylabel in [
-        ("effective_fps", "Mean FPS by model", "fps_vs_model.png", "FPS"),
-        ("mean_visibility", "Visibility vs model", "visibility_vs_model.png", "Visibility"),
-        ("mean_presence", "Presence vs model", "presence_vs_model.png", "Presence"),
-        ("jitter_world_m_mean", "Jitter vs model", "jitter_vs_model.png", "Jitter"),
-        ("left_upper_arm_abs_error_m_mean", "Arm abs error vs model", "arm_abs_error_vs_model.png", "Abs error (m)"),
-    ]:
-        labels_m, values_m = grouped_mean(rows, "model", metric)
-        save_bar(labels_m, values_m, title, ylabel, out_dir / filename)
+    save_bar(labels, [to_float(r["jitter_world_m_mean"]) for r in rows], "Jitter by each video/model", "Jitter", out_dir / "jitter_by_video_model.png")
+    save_bar(labels, [to_float(r["left_upper_arm_abs_error_m_mean"]) for r in rows], "Arm abs error by each video/model", "Abs error (m)", out_dir / "arm_abs_error_by_video_model.png")
 
     valid = [r for r in rows if np.isfinite(to_float(r["mean_presence"])) and np.isfinite(to_float(r["jitter_world_m_mean"]))]
     save_scatter(
@@ -104,6 +93,16 @@ def main():
         "Mean presence",
         "Jitter",
         out_dir / "jitter_vs_mean_presence.png"
+    )
+    valid2 = [r for r in rows if np.isfinite(to_float(r["left_upper_arm_abs_error_m_mean"])) and np.isfinite(to_float(r["jitter_world_m_mean"]))]
+    save_scatter(
+        [to_float(r["left_upper_arm_abs_error_m_mean"]) for r in valid2],
+        [to_float(r["jitter_world_m_mean"]) for r in valid2],
+        [short_label(r["video_or_session"], r["model"]) for r in valid2],
+        "Jitter vs arm length error",
+        "Arm abs error (m)",
+        "Jitter",
+        out_dir / "jitter_vs_arm_error.png"
     )
     print(f"Graphs saved to {out_dir}")
 

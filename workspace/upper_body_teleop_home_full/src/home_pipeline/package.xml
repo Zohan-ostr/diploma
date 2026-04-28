@@ -1,0 +1,16 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>home_pipeline</name>
+  <version>0.1.0</version>
+  <description>Home mode: webcam/mock pose, MediaPipe, retargeting, RViz backend.</description>
+  <maintainer email="zahar@example.com">Zahar</maintainer>
+  <license>MIT</license>
+  <buildtool_depend>ament_python</buildtool_depend>
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>upper_body_msgs</exec_depend>
+  <exec_depend>robot_state_publisher</exec_depend>
+  <exec_depend>rviz2</exec_depend>
+  <export><build_type>ament_python</build_type></export>
+</package>

@@ -1,0 +1,11 @@
+services:
+  hpe_runtime_cpu:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.cpu
+    container_name: hpe_runtime_cpu
+    working_dir: /workspace
+    volumes:
+      - ..:/workspace
+    tty: true
+    stdin_open: true

@@ -1,31 +1,63 @@
-# docker
+# Docker profiles for human_pose_estimation
 
-Заготовка папки `human_pose_estimation/docker` для запуска алгоритмов через контейнеры.
+Здесь лежат два отдельных профиля Docker:
 
-## Файлы
-- `Dockerfile` — базовый контейнер для Python / MediaPipe / ONNX
-- `Dockerfile.openpose` — отдельный контейнер под OpenPose
-- `docker-compose.yml` — запуск контейнеров
-- `entrypoint.sh` — общий entrypoint
-- `requirements-base.txt` — общие Python-зависимости
-- `requirements-hpe.txt` — зависимости для HPE-базовых методов
-- `requirements-mmpose.txt` — место под OpenMMLab stack
+- `Dockerfile.cpu` и `docker-compose.cpu.yml` — для домашнего ноутбука без NVIDIA GPU
+- `Dockerfile.gpu` и `docker-compose.gpu.yml` — для лабораторного компьютера с NVIDIA GPU
+- `Dockerfile.openpose` — отдельный GPU-контейнер под OpenPose
 
-## Быстрый старт
+## 1. Работа на домашнем ноутбуке
 
-Из корня проекта `diploma/`:
+Из папки `human_pose_estimation`:
 
 ```bash
-docker compose -f human_pose_estimation/docker/docker-compose.yml build
-docker compose -f human_pose_estimation/docker/docker-compose.yml run --rm hpe_runtime bash
+docker compose -f docker/docker-compose.cpu.yml build
+docker compose -f docker/docker-compose.cpu.yml run --rm hpe_runtime_cpu bash
 ```
 
-Для OpenPose:
+После входа в контейнер:
+```bash
+cd /workspace/single_camera/media_pipe
+python scripts/benchmark.py
+```
+
+Этот контейнер:
+- не тянет CUDA
+- не ставит PyTorch GPU stack
+- подходит для `media_pipe`, анализа результатов, playback и общей отладки
+
+## 2. Работа на лабораторном компьютере
+
+Из папки `human_pose_estimation`:
 
 ```bash
-docker compose -f human_pose_estimation/docker/docker-compose.yml --profile openpose build
-docker compose -f human_pose_estimation/docker/docker-compose.yml --profile openpose run --rm openpose_runtime bash
+docker compose -f docker/docker-compose.gpu.yml build
+docker compose -f docker/docker-compose.gpu.yml run --rm hpe_runtime_gpu bash
 ```
 
-## Важно
-`requirements-mmpose.txt` оставлен как заготовка. Для MMPose обычно удобнее ставить пакетный стек через `openmim` и закреплять версии отдельно под CUDA / torch.
+После входа в контейнер:
+```bash
+cd /workspace/single_camera/mmpose_3d
+python scripts/benchmark.py
+```
+
+Этот контейнер:
+- рассчитан на NVIDIA GPU
+- ставит PyTorch + OpenMMLab stack
+- нужен для тяжёлых алгоритмов:
+  - `mmpose_3d`
+  - `videopose3d`
+  - `mmpose_voxelpose`
+
+## 3. OpenPose
+
+Если нужен OpenPose:
+
+```bash
+docker compose -f docker/docker-compose.gpu.yml --profile openpose build
+docker compose -f docker/docker-compose.gpu.yml --profile openpose run --rm openpose_runtime bash
+```
+
+## 4. Что менять в проекте
+
+В папке `docker/` лучше оставить только эти файлы и удалить старый единый `Dockerfile` и старый `docker-compose.yml`, чтобы не путаться.

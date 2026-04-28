@@ -9,14 +9,13 @@ single_camera:
   device: cpu
   stride: 1
   max_frames: 0
-  detector_conf_thr: 0.5
-  keypoint_conf_thr: 0.3
+  bbox_thr: 0.3
+  kpt_thr: 0.3
+  num_instances: 1
+  rebase_keypoint_height: true
 
 model:
-  backend: mmpose
-  detector_name: person_detector
-  pose2d_name: human_pose_2d
-  pose3d_name: human_pose_3d_lifter
+  pose3d_alias: human3d
 
 run_names:
   baseline: run

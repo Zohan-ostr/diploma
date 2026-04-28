@@ -36,16 +36,27 @@ human_pose_estimation/
 
 Все Docker-команды запускаются **из папки `human_pose_estimation`**.
 
-### Сборка контейнера
+### Сборка контейнера cpu
 
 ```bash
-docker compose -f docker/docker-compose.yml build
+docker compose -f docker/docker-compose.cpu.yml build
 ```
 
-### Запуск основного контейнера
+### Запуск основного контейнера cpu
 
 ```bash
-docker compose -f docker/docker-compose.yml run --rm hpe_runtime bash
+docker compose -f docker/docker-compose.cpu.yml run --rm hpe_runtime_cpu bash
+```
+### Сборка контейнера gpu
+
+```bash
+docker compose -f docker/docker-compose.gpu.yml build
+```
+
+### Запуск основного контейнера gpu
+
+```bash
+docker compose -f docker/docker-compose.gpu.yml run --rm hpe_runtime_gpu bash
 ```
 
 ### Запуск контейнера OpenPose

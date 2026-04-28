@@ -1,0 +1,10 @@
+build/
+install/
+log/
+*.pyc
+__pycache__/
+.ros/
+*.db3
+*.mcap
+rosbag2_*/
+.env

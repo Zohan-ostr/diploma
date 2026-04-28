@@ -1,0 +1,22 @@
+services:
+  home-dev:
+    build:
+      context: ..
+      dockerfile: docker/home/Dockerfile
+    image: upper-body-teleop-home:latest
+    container_name: upper_body_home_dev
+    network_mode: host
+    ipc: host
+    privileged: true
+    environment:
+      - DISPLAY=${DISPLAY}
+      - QT_X11_NO_MITSHM=1
+      - LIBGL_ALWAYS_SOFTWARE=1
+      - VIDEO_DEVICE=${VIDEO_DEVICE:-/dev/video0}
+    volumes:
+      - ..:/workspace
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - /dev:/dev
+    working_dir: /workspace
+    stdin_open: true
+    tty: true

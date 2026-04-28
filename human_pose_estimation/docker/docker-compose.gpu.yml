@@ -1,0 +1,37 @@
+services:
+  hpe_runtime_gpu:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.gpu
+    container_name: hpe_runtime_gpu
+    working_dir: /workspace
+    volumes:
+      - ..:/workspace
+    tty: true
+    stdin_open: true
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  openpose_runtime:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.openpose
+    container_name: openpose_runtime
+    working_dir: /workspace
+    volumes:
+      - ..:/workspace
+    tty: true
+    stdin_open: true
+    profiles: ["openpose"]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

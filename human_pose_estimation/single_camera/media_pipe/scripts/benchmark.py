@@ -1,5 +1,6 @@
 
 from __future__ import annotations
+import argparse
 import csv, json, time
 from dataclasses import dataclass, asdict
 from pathlib import Path
@@ -93,10 +94,6 @@ def write_global_summary(out_root: Path, summaries: List[VideoRunSummary]) -> No
         for s in summaries:
             d = asdict(s); w.writerow([d[h] for h in header])
     (out_root / 'summary.json').write_text(json.dumps([asdict(s) for s in summaries], ensure_ascii=False, indent=2), encoding='utf-8')
-
-#!/usr/bin/env python3
-from __future__ import annotations
-import argparse
 
 def run_on_video(video_path: Path, model_path: Path, out_dir: Path, set_name: str, delegate: str='CPU', stride: int=1, max_frames: int=0, num_poses: int=1,
                  min_pose_detection_conf: float=0.5, min_pose_presence_conf: float=0.5, min_tracking_conf: float=0.5, arm_len_ref_m: float=0.249,
