@@ -64,12 +64,10 @@ class WebcamMediaPipeNode(Node):
 
         self.preview_enabled = self.preview
 
-        # Countdown calibration state
         self.calibration_countdown_active = False
         self.calibration_deadline_sec = 0.0
         self.calibration_duration_sec = 3.0
 
-        # Simple key debounce
         self.last_key_time_sec = 0.0
         self.key_debounce_sec = 0.5
 
@@ -79,7 +77,7 @@ class WebcamMediaPipeNode(Node):
             f'Webcam MediaPipe node started: camera_index={self.camera_index}, preview={self.preview}'
         )
         self.get_logger().info(
-            'Keyboard in camera window: C = 3 sec countdown + calibrate, R = reset/cancel, Q = close preview'
+            'Publishing pose_world_landmarks when available. C = countdown calibrate, R = reset, Q = close preview.'
         )
 
     def now_sec(self) -> float:
@@ -111,6 +109,7 @@ class WebcamMediaPipeNode(Node):
         if remaining <= 0.0:
             self.calibration_countdown_active = False
             self.publish_control('calibrate')
+
             cv2.putText(
                 frame,
                 'CALIBRATED',
@@ -128,69 +127,46 @@ class WebcamMediaPipeNode(Node):
         cv2.rectangle(overlay, (0, 0), (frame.shape[1], frame.shape[0]), (0, 0, 0), -1)
         cv2.addWeighted(overlay, 0.35, frame, 0.65, 0, frame)
 
-        cv2.putText(
-            frame,
-            'Calibration in',
-            (120, 180),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            1.2,
-            (0, 255, 255),
-            3
-        )
-
-        cv2.putText(
-            frame,
-            str(shown_number),
-            (290, 300),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            3.0,
-            (0, 255, 255),
-            6
-        )
-
-        cv2.putText(
-            frame,
-            'Stand still in neutral pose',
-            (80, 370),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.9,
-            (0, 255, 255),
-            2
-        )
+        cv2.putText(frame, 'Calibration in', (120, 180), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 255), 3)
+        cv2.putText(frame, str(shown_number), (290, 300), cv2.FONT_HERSHEY_SIMPLEX, 3.0, (0, 255, 255), 6)
+        cv2.putText(frame, 'Stand still in neutral pose', (80, 370), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 255), 2)
 
     def tick(self):
         ok, frame = self.cap.read()
+
         if not ok:
             self.get_logger().warn('Failed to read frame from camera', throttle_duration_sec=2.0)
             return
 
-        # ВАЖНО:
-        # Не зеркалим кадр перед MediaPipe.
-        # Так left/right landmarks соответствуют реальному левому/правому телу.
         raw_frame = frame.copy()
 
+        # Не зеркалим кадр до MediaPipe, чтобы left/right не путались.
         rgb = cv2.cvtColor(raw_frame, cv2.COLOR_BGR2RGB)
         result = self.pose.process(rgb)
 
         msg = PoseLandmarks3D()
         msg.header.stamp = self.get_clock().now().to_msg()
-        msg.header.frame_id = 'camera'
+        msg.header.frame_id = 'mediapipe_world'
         msg.valid = False
 
-        # Для отображения тоже пока НЕ зеркалим.
-        # Это менее привычно визуально, зато координаты и стороны не путаются.
         preview_frame = raw_frame.copy()
 
         if result.pose_landmarks:
             names, xs, ys, zs, vis = [], [], [], [], []
 
-            # Home mode:
-            # Используем 2D-нормализованные координаты изображения.
-            # Не pose_world_landmarks.
-            landmarks = result.pose_landmarks.landmark
+            if result.pose_world_landmarks:
+                landmarks_for_control = result.pose_world_landmarks.landmark
+                frame_id = 'mediapipe_world'
+                source_label = 'world3d'
+            else:
+                landmarks_for_control = result.pose_landmarks.landmark
+                frame_id = 'mediapipe_image'
+                source_label = 'image2d_fallback'
+
+            msg.header.frame_id = frame_id
 
             for idx, name in MP_NAMES.items():
-                lm = landmarks[idx]
+                lm = landmarks_for_control[idx]
                 names.append(name)
                 xs.append(float(lm.x))
                 ys.append(float(lm.y))
@@ -206,15 +182,11 @@ class WebcamMediaPipeNode(Node):
             self.pub.publish(msg)
 
             if self.preview_enabled:
-                self.mp_draw.draw_landmarks(
-                    preview_frame,
-                    result.pose_landmarks,
-                    self.mp_pose.POSE_CONNECTIONS
-                )
+                self.mp_draw.draw_landmarks(preview_frame, result.pose_landmarks, self.mp_pose.POSE_CONNECTIONS)
 
                 cv2.putText(
                     preview_frame,
-                    'Pose: valid | C countdown+calibrate | R reset | Q close',
+                    f'Pose: valid [{source_label}] | C calibrate | R reset | Q close',
                     (20, 30),
                     cv2.FONT_HERSHEY_SIMPLEX,
                     0.65,
@@ -222,14 +194,14 @@ class WebcamMediaPipeNode(Node):
                     2
                 )
 
-                # Показываем visibility рук для отладки
                 try:
-                    lsh_v = landmarks[11].visibility
-                    rsh_v = landmarks[12].visibility
-                    lel_v = landmarks[13].visibility
-                    rel_v = landmarks[14].visibility
-                    lwr_v = landmarks[15].visibility
-                    rwr_v = landmarks[16].visibility
+                    image_landmarks = result.pose_landmarks.landmark
+                    lsh_v = image_landmarks[11].visibility
+                    rsh_v = image_landmarks[12].visibility
+                    lel_v = image_landmarks[13].visibility
+                    rel_v = image_landmarks[14].visibility
+                    lwr_v = image_landmarks[15].visibility
+                    rwr_v = image_landmarks[16].visibility
 
                     cv2.putText(
                         preview_frame,
@@ -249,7 +221,7 @@ class WebcamMediaPipeNode(Node):
             if self.preview_enabled:
                 cv2.putText(
                     preview_frame,
-                    'Pose: no person | C countdown+calibrate | R reset | Q close',
+                    'Pose: no person | C calibrate | R reset | Q close',
                     (20, 30),
                     cv2.FONT_HERSHEY_SIMPLEX,
                     0.65,
@@ -264,7 +236,6 @@ class WebcamMediaPipeNode(Node):
 
             key = cv2.waitKey(1) & 0xFF
 
-            # English + common Russian-layout byte codes
             calibrate_keys = {ord('c'), ord('C'), 241, 209}
             reset_keys = {ord('r'), ord('R'), 234, 202}
             quit_keys = {ord('q'), ord('Q'), 233, 201}
@@ -295,6 +266,7 @@ class WebcamMediaPipeNode(Node):
             cv2.destroyAllWindows()
         except Exception:
             pass
+
         super().destroy_node()
 
 

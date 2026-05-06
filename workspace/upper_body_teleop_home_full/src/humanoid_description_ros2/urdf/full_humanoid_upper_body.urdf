@@ -22,11 +22,11 @@
 
   <!-- Left arm: 3-DOF shoulder + elbow -->
   <link name="left_shoulder_pitch_link"><visual><geometry><sphere radius="0.045"/></geometry><material name="blue"/></visual></link>
-  <joint name="left_shoulder_pitch_joint" type="revolute"><parent link="torso_link"/><child link="left_shoulder_pitch_link"/><origin xyz="0 0.20 0.38"/><axis xyz="0 1 0"/><limit lower="-2.8" upper="2.8" effort="40" velocity="3"/></joint>
+  <joint name="left_shoulder_pitch_joint" type="revolute"><parent link="torso_link"/><child link="left_shoulder_pitch_link"/><origin xyz="0 0.20 0.38"/><axis xyz="0 0 1"/><limit lower="-2.8" upper="2.8" effort="40" velocity="3"/></joint>
   <link name="left_shoulder_roll_link"><visual><geometry><sphere radius="0.04"/></geometry><material name="blue"/></visual></link>
   <joint name="left_shoulder_roll_joint" type="revolute"><parent link="left_shoulder_pitch_link"/><child link="left_shoulder_roll_link"/><axis xyz="1 0 0"/><limit lower="-1.8" upper="1.8" effort="40" velocity="3"/></joint>
   <link name="left_shoulder_yaw_link"><visual><geometry><sphere radius="0.035"/></geometry><material name="blue"/></visual></link>
-  <joint name="left_shoulder_yaw_joint" type="revolute"><parent link="left_shoulder_roll_link"/><child link="left_shoulder_yaw_link"/><axis xyz="0 0 1"/><limit lower="-2.5" upper="2.5" effort="40" velocity="3"/></joint>
+  <joint name="left_shoulder_yaw_joint" type="revolute"><parent link="left_shoulder_roll_link"/><child link="left_shoulder_yaw_link"/><axis xyz="0 1 0"/><limit lower="-2.5" upper="2.5" effort="40" velocity="3"/></joint>
   <link name="left_upper_arm_link"><visual><origin xyz="0 0.135 0" rpy="1.5708 0 0"/><geometry><cylinder radius="0.035" length="0.27"/></geometry><material name="blue"/></visual></link>
   <joint name="left_upper_arm_fixed" type="fixed"><parent link="left_shoulder_yaw_link"/><child link="left_upper_arm_link"/><origin xyz="0 0.135 0"/></joint>
   <link name="left_elbow_link"><visual><geometry><sphere radius="0.04"/></geometry><material name="blue"/></visual></link>
@@ -38,11 +38,11 @@
 
   <!-- Right arm -->
   <link name="right_shoulder_pitch_link"><visual><geometry><sphere radius="0.045"/></geometry><material name="blue"/></visual></link>
-  <joint name="right_shoulder_pitch_joint" type="revolute"><parent link="torso_link"/><child link="right_shoulder_pitch_link"/><origin xyz="0 -0.20 0.38"/><axis xyz="0 1 0"/><limit lower="-2.8" upper="2.8" effort="40" velocity="3"/></joint>
+  <joint name="right_shoulder_pitch_joint" type="revolute"><parent link="torso_link"/><child link="right_shoulder_pitch_link"/><origin xyz="0 -0.20 0.38"/><axis xyz="0 0 1"/><limit lower="-2.8" upper="2.8" effort="40" velocity="3"/></joint>
   <link name="right_shoulder_roll_link"><visual><geometry><sphere radius="0.04"/></geometry><material name="blue"/></visual></link>
   <joint name="right_shoulder_roll_joint" type="revolute"><parent link="right_shoulder_pitch_link"/><child link="right_shoulder_roll_link"/><axis xyz="-1 0 0"/><limit lower="-1.8" upper="1.8" effort="40" velocity="3"/></joint>
   <link name="right_shoulder_yaw_link"><visual><geometry><sphere radius="0.035"/></geometry><material name="blue"/></visual></link>
-  <joint name="right_shoulder_yaw_joint" type="revolute"><parent link="right_shoulder_roll_link"/><child link="right_shoulder_yaw_link"/><axis xyz="0 0 1"/><limit lower="-2.5" upper="2.5" effort="40" velocity="3"/></joint>
+  <joint name="right_shoulder_yaw_joint" type="revolute"><parent link="right_shoulder_roll_link"/><child link="right_shoulder_yaw_link"/><axis xyz="0 -1 0"/><limit lower="-2.5" upper="2.5" effort="40" velocity="3"/></joint>
   <link name="right_upper_arm_link"><visual><origin xyz="0 -0.135 0" rpy="1.5708 0 0"/><geometry><cylinder radius="0.035" length="0.27"/></geometry><material name="blue"/></visual></link>
   <joint name="right_upper_arm_fixed" type="fixed"><parent link="right_shoulder_yaw_link"/><child link="right_upper_arm_link"/><origin xyz="0 -0.135 0"/></joint>
   <link name="right_elbow_link"><visual><geometry><sphere radius="0.04"/></geometry><material name="blue"/></visual></link>
