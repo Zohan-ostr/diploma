@@ -2,13 +2,35 @@ import csv
 import math
 import os
 from datetime import datetime
-from typing import Dict, Tuple, Optional
+from typing import Dict, Tuple, Optional, List
 
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
 from std_msgs.msg import String, Bool
 from upper_body_msgs.msg import PoseLandmarks3D, UpperBodyCommand
+
+
+# ============================================================
+# HOME / RVIZ RETARGET NODE — SEQUENTIAL IK VERSION
+# ============================================================
+#
+# Последовательная ОЗК:
+#
+#   1. MediaPipe Pose даёт 3D landmarks.
+#   2. Строим систему координат корпуса относительно таза.
+#   3. Для каждой руки:
+#        shoulder -> elbow  задаёт целевое положение локтя
+#        elbow    -> wrist  задаёт целевое положение конца руки
+#   4. Сначала решаем IK плеча для попадания локтем.
+#   5. Потом при найденном плече решаем угол локтя для попадания кистью.
+#
+# Важно:
+#   Это не калибровочная схема q_robot = q_zero + delta.
+#   Кнопка C теперь просто сбрасывает внутренний фильтр IK.
+#   Кнопка R возвращает робота в дефолтную позу.
+#
+# ============================================================
 
 
 UPPER_COMMAND_JOINTS = [
@@ -47,21 +69,21 @@ FULL_JOINTS = [
     'right_ankle_joint',
 ]
 
-# Абсолютные пределы для RViz/Home-модели.
-# На реальном роботе эти значения нужно будет заменить на реальные лимиты Unitree.
-LIMITS = {
-    'left_shoulder_pitch_joint': (-0.8, 0.8),
-    'right_shoulder_pitch_joint': (-0.8, 0.8),
 
-    'left_shoulder_roll_joint': (-1.7, 1.7),
-    'right_shoulder_roll_joint': (-1.7, 1.7),
+# Сейчас safety-ограничения отключены, поэтому лимиты широкие.
+# Это нужно, чтобы увидеть реальное поведение IK.
+JOINT_LIMITS = {
+    'left_shoulder_pitch_joint': (-3.14, 3.14),
+    'left_shoulder_roll_joint': (-3.14, 3.14),
+    'left_shoulder_yaw_joint': (-3.14, 3.14),
+    'left_elbow_joint': (-0.20, 3.14),
 
-    'left_shoulder_yaw_joint': (-3.15, 3.15),
-    'right_shoulder_yaw_joint': (-3.15, 3.15),
-
-    'left_elbow_joint': (0.05, 2.2),
-    'right_elbow_joint': (0.05, 2.2),
+    'right_shoulder_pitch_joint': (-3.14, 3.14),
+    'right_shoulder_roll_joint': (-3.14, 3.14),
+    'right_shoulder_yaw_joint': (-3.14, 3.14),
+    'right_elbow_joint': (-0.20, 3.14),
 }
+
 
 FULL_ZERO = {
     'torso_joint': 0.0,
@@ -87,7 +109,16 @@ FULL_ZERO = {
     'right_ankle_joint': 0.0,
 }
 
+
 Point = Tuple[float, float, float]
+Mat3 = List[List[float]]
+
+
+# Длины сегментов простой RViz-модели.
+# Если по видео будет видно, что модель систематически недотягивается
+# или перетягивается, менять надо эти два значения.
+ROBOT_UPPER_ARM = 0.30
+ROBOT_FOREARM = 0.30
 
 
 def clamp(v: float, lo: float, hi: float) -> float:
@@ -129,6 +160,11 @@ def normalize(a: Point) -> Point:
     return (a[0] / n, a[1] / n, a[2] / n)
 
 
+def sq_dist(a: Point, b: Point) -> float:
+    d = sub(a, b)
+    return dot(d, d)
+
+
 def angle_between(a: Point, b: Point) -> float:
     na = norm(a)
     nb = norm(b)
@@ -140,6 +176,45 @@ def angle_between(a: Point, b: Point) -> float:
     return math.acos(c)
 
 
+def eye3() -> Mat3:
+    return [
+        [1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [0.0, 0.0, 1.0],
+    ]
+
+
+def mat_mul(A: Mat3, B: Mat3) -> Mat3:
+    return [
+        [
+            A[i][0] * B[0][j] + A[i][1] * B[1][j] + A[i][2] * B[2][j]
+            for j in range(3)
+        ]
+        for i in range(3)
+    ]
+
+
+def mat_vec(R: Mat3, v: Point) -> Point:
+    return (
+        R[0][0] * v[0] + R[0][1] * v[1] + R[0][2] * v[2],
+        R[1][0] * v[0] + R[1][1] * v[1] + R[1][2] * v[2],
+        R[2][0] * v[0] + R[2][1] * v[1] + R[2][2] * v[2],
+    )
+
+
+def rot_axis(axis: Point, angle: float) -> Mat3:
+    x, y, z = normalize(axis)
+    c = math.cos(angle)
+    s = math.sin(angle)
+    C = 1.0 - c
+
+    return [
+        [c + x * x * C, x * y * C - z * s, x * z * C + y * s],
+        [y * x * C + z * s, c + y * y * C, y * z * C - x * s],
+        [z * x * C - y * s, z * y * C + x * s, c + z * z * C],
+    ]
+
+
 def local_components(v: Point, right: Point, up: Point, front: Point) -> Point:
     return (
         dot(v, right),
@@ -148,144 +223,220 @@ def local_components(v: Point, right: Point, up: Point, front: Point) -> Point:
     )
 
 
-class AdaptiveSafetyLayer:
+def joint_names_for_side(side: str) -> List[str]:
+    prefix = 'left' if side == 'left' else 'right'
+    return [
+        f'{prefix}_shoulder_pitch_joint',
+        f'{prefix}_shoulder_roll_joint',
+        f'{prefix}_shoulder_yaw_joint',
+        f'{prefix}_elbow_joint',
+    ]
+
+
+class SequentialArmIKSolver:
     """
-    Safety layer без принудительного reset.
+    Последовательный IK одной руки с дискретной плоскостью локтя.
 
-    Теперь safety работает как projection/clamping:
-    если команда уводит руку в опасную область, она не выполняется полностью,
-    а заменяется ближайшим крайним допустимым положением.
+    Важно:
+    shoulder_yaw НЕ ищется оптимизацией.
 
-    Что ограничиваем:
-    1. shoulder_roll снизу — чтобы руки не входили в корпус снизу;
-    2. shoulder_roll сверху — чтобы руки не пересекались над корпусом/головой;
-    3. elbow_joint адаптивно от shoulder_roll:
-       - рука низко  -> локоть почти прямой;
-       - рука в рабочей зоне -> локоть можно сгибать сильнее;
-       - рука слишком высоко -> локоть снова ограничивается;
-    4. yaw НЕ зануляем принудительно. Он продолжает работать.
+    Почему:
+        yaw — это поворот вокруг оси плечо -> локоть.
+        Положение локтя почти не задаёт этот угол, поэтому непрерывная
+        оптимизация yaw получается неустойчивой.
+
+    Логика:
+        1. yaw выбирается дискретно: 0 или ±pi;
+        2. pitch/roll решают положение локтя;
+        3. elbow решает положение кисти.
     """
 
-    def __init__(self):
-        # Hard reset полностью отключён.
-        # Даже при опасной команде мы просто проецируем её в безопасную область.
-        self.enable_hard_reset = False
+    def __init__(self, side: str):
+        self.side = side
+        self.side_sign = 1.0 if side == 'left' else -1.0
+        self.joints = joint_names_for_side(side)
 
-        # Крайние допустимые положения плеча по roll.
-        # Если руки всё ещё пересекаются сверху/снизу — эти значения нужно ужесточить.
-        self.roll_min = -1.15
-        self.roll_max = 1.28
+    def clamp_q(self, q: List[float]) -> List[float]:
+        out = []
+        for joint, value in zip(self.joints, q):
+            lo, hi = JOINT_LIMITS[joint]
+            out.append(clamp(value, lo, hi))
+        return out
 
-        # В зоне слишком низко/слишком высоко дополнительно ужимаем локоть.
-        self.elbow_min = 0.05
+    def shoulder_rotation(self, pitch: float, roll: float, yaw: float) -> Mat3:
+        s = self.side_sign
 
-    def adaptive_elbow_max(self, shoulder_roll: float) -> float:
-        """
-        Адаптивный максимум локтя от положения плеча.
+        R = eye3()
 
-        Идея:
-        - низко: локоть почти прямой, чтобы предплечье не входило в корпус;
-        - средняя зона: локоть может сгибаться широко;
-        - верхняя зона: локоть снова ограничиваем, чтобы руки не пересекались сверху.
-        """
+        # Оси соответствуют URDF:
+        # pitch around Z
+        # roll around ±X
+        # yaw around ±Y
+        R = mat_mul(R, rot_axis((0.0, 0.0, 1.0), pitch))
+        R = mat_mul(R, rot_axis((s, 0.0, 0.0), roll))
+        R = mat_mul(R, rot_axis((0.0, s, 0.0), yaw))
 
-        r = shoulder_roll
+        return R
 
-        if r <= -0.85:
-            # Рука сильно внизу: почти прямая.
-            return 0.35
+    def fk_elbow(self, pitch: float, roll: float, yaw: float) -> Point:
+        R = self.shoulder_rotation(pitch, roll, yaw)
+        upper_local = (0.0, self.side_sign * ROBOT_UPPER_ARM, 0.0)
+        return mat_vec(R, upper_local)
 
-        if r <= -0.25:
-            # -0.85 .. -0.25 => 0.35 .. 0.85
-            t = (r + 0.85) / 0.60
-            return 0.35 + t * (0.85 - 0.35)
+    def fk_wrist(self, q: List[float]) -> Tuple[Point, Point]:
+        q = self.clamp_q(q)
 
-        if r <= 0.35:
-            # -0.25 .. 0.35 => 0.85 .. 1.55
-            t = (r + 0.25) / 0.60
-            return 0.85 + t * (1.55 - 0.85)
+        pitch, roll, yaw, elbow = q
 
-        if r <= 0.90:
-            # 0.35 .. 0.90 => 1.55 .. 2.05
-            t = (r - 0.35) / 0.55
-            return 1.55 + t * (2.05 - 1.55)
+        R = self.shoulder_rotation(pitch, roll, yaw)
 
-        if r <= self.roll_max:
-            # 0.90 .. roll_max => 2.05 .. 1.05
-            # Когда рука почти сверху, локоть опять ограничиваем,
-            # иначе предплечье пересекает корпус/голову.
-            t = (r - 0.90) / max(1e-6, (self.roll_max - 0.90))
-            return 2.05 + t * (1.05 - 2.05)
+        upper_local = (0.0, self.side_sign * ROBOT_UPPER_ARM, 0.0)
+        elbow_pos = mat_vec(R, upper_local)
 
-        return 1.05
+        # elbow axis: ±X
+        R_elbow = mat_mul(R, rot_axis((self.side_sign, 0.0, 0.0), elbow))
 
-    def apply(self, desired: Dict[str, float]) -> Tuple[Dict[str, float], Dict[str, float], bool, str]:
-        safe = dict(desired)
+        forearm_local = (0.0, self.side_sign * ROBOT_FOREARM, 0.0)
+        wrist_pos = add(elbow_pos, mat_vec(R_elbow, forearm_local))
 
-        safety_active = False
+        return elbow_pos, wrist_pos
 
-        # 1) Абсолютные лимиты из LIMITS.
-        for joint in UPPER_COMMAND_JOINTS:
-            lo, hi = LIMITS[joint]
-            before = safe.get(joint, 0.0)
-            after = clamp(before, lo, hi)
-            if abs(after - before) > 1e-9:
-                safety_active = True
-            safe[joint] = after
+    def shoulder_loss(
+        self,
+        pitch_roll: List[float],
+        yaw_fixed: float,
+        target_elbow: Point,
+        q_ref: List[float],
+    ) -> float:
+        pitch, roll = pitch_roll
 
-        # 2) Чёткие границы shoulder_roll снизу и сверху.
-        # Это ключевая защита от пересечений.
-        for side in ['left', 'right']:
-            roll_joint = f'{side}_shoulder_roll_joint'
+        elbow_pos = self.fk_elbow(pitch, roll, yaw_fixed)
+        err = sq_dist(elbow_pos, target_elbow)
 
-            before = safe[roll_joint]
-            after = clamp(before, self.roll_min, self.roll_max)
+        # Регуляризация только по pitch/roll.
+        reg = (pitch - q_ref[0]) ** 2 + (roll - q_ref[1]) ** 2
 
-            if abs(after - before) > 1e-9:
-                safety_active = True
+        return 1.0 * err + 0.01 * reg
 
-            safe[roll_joint] = after
+    def solve_shoulder_to_elbow(
+        self,
+        target_elbow: Point,
+        yaw_fixed: float,
+        q_init: List[float],
+    ) -> Tuple[List[float], float]:
+        # Оптимизируем только pitch и roll.
+        q = [q_init[0], q_init[1]]
+        q_ref = list(q_init)
 
-        # 3) Yaw больше НЕ зануляем.
-        # Оставляем yaw-команду такой, какой её дал алгоритм plane flip.
-        # Это возвращает проворот рук по yaw.
+        eps = 1e-3
+        lr = 0.45
 
-        # 4) Адаптивные пределы локтей.
-        left_roll = safe['left_shoulder_roll_joint']
-        right_roll = safe['right_shoulder_roll_joint']
+        pitch_joint = self.joints[0]
+        roll_joint = self.joints[1]
 
-        left_elbow_desired = safe['left_elbow_joint']
-        right_elbow_desired = safe['right_elbow_joint']
+        for _ in range(45):
+            grad = [0.0, 0.0]
 
-        left_elbow_max = self.adaptive_elbow_max(left_roll)
-        right_elbow_max = self.adaptive_elbow_max(right_roll)
+            for j in range(2):
+                qp = list(q)
+                qm = list(q)
 
-        left_elbow_safe = clamp(left_elbow_desired, self.elbow_min, left_elbow_max)
-        right_elbow_safe = clamp(right_elbow_desired, self.elbow_min, right_elbow_max)
+                qp[j] += eps
+                qm[j] -= eps
 
-        left_over = max(0.0, left_elbow_desired - left_elbow_max)
-        right_over = max(0.0, right_elbow_desired - right_elbow_max)
+                lp = self.shoulder_loss(qp, yaw_fixed, target_elbow, q_ref)
+                lm = self.shoulder_loss(qm, yaw_fixed, target_elbow, q_ref)
 
-        if abs(left_elbow_safe - left_elbow_desired) > 1e-9:
-            safety_active = True
-        if abs(right_elbow_safe - right_elbow_desired) > 1e-9:
-            safety_active = True
+                grad[j] = (lp - lm) / (2.0 * eps)
 
-        safe['left_elbow_joint'] = left_elbow_safe
-        safe['right_elbow_joint'] = right_elbow_safe
+            for j in range(2):
+                q[j] -= lr * grad[j]
 
-        # 5) Reset больше не делаем.
-        hard_reset = False
-        reason = 'OK_PROJECTED_TO_SAFE_BOUNDARY' if safety_active else 'OK'
+            q[0] = clamp(q[0], JOINT_LIMITS[pitch_joint][0], JOINT_LIMITS[pitch_joint][1])
+            q[1] = clamp(q[1], JOINT_LIMITS[roll_joint][0], JOINT_LIMITS[roll_joint][1])
 
-        return safe, {
-            'left_elbow_max': left_elbow_max,
-            'right_elbow_max': right_elbow_max,
-            'left_elbow_over': left_over,
-            'right_elbow_over': right_over,
-            'safety_active': 1.0 if safety_active else 0.0,
-            'hard_reset': 0.0,
-        }, hard_reset, reason
+            lr *= 0.96
+
+        loss = self.shoulder_loss(q, yaw_fixed, target_elbow, q_ref)
+        return [q[0], q[1], yaw_fixed], loss
+
+    def elbow_loss(
+        self,
+        elbow: float,
+        q_shoulder: List[float],
+        target_wrist: Point,
+        elbow_ref: float,
+    ) -> float:
+        q = [q_shoulder[0], q_shoulder[1], q_shoulder[2], elbow]
+        _, wrist_pos = self.fk_wrist(q)
+
+        wrist_err = sq_dist(wrist_pos, target_wrist)
+        reg = (elbow - elbow_ref) ** 2
+
+        return wrist_err + 0.01 * reg
+
+    def solve_elbow_to_wrist(
+        self,
+        q_shoulder: List[float],
+        target_wrist: Point,
+        elbow_init: float,
+    ) -> Tuple[float, float]:
+        joint = self.joints[3]
+        lo, hi = JOINT_LIMITS[joint]
+
+        elbow = clamp(elbow_init, lo, hi)
+        elbow_ref = elbow
+
+        eps = 1e-3
+        lr = 0.55
+
+        for _ in range(40):
+            lp = self.elbow_loss(clamp(elbow + eps, lo, hi), q_shoulder, target_wrist, elbow_ref)
+            lm = self.elbow_loss(clamp(elbow - eps, lo, hi), q_shoulder, target_wrist, elbow_ref)
+
+            grad = (lp - lm) / (2.0 * eps)
+
+            elbow -= lr * grad
+            elbow = clamp(elbow, lo, hi)
+
+            lr *= 0.95
+
+        loss = self.elbow_loss(elbow, q_shoulder, target_wrist, elbow_ref)
+        return elbow, loss
+
+    def solve_sequential(
+        self,
+        target_elbow: Point,
+        target_wrist: Point,
+        yaw_fixed: float,
+        q_init: List[float],
+    ) -> Tuple[List[float], Dict[str, float]]:
+        q_init = self.clamp_q(list(q_init))
+
+        q_shoulder, shoulder_loss = self.solve_shoulder_to_elbow(
+            target_elbow=target_elbow,
+            yaw_fixed=yaw_fixed,
+            q_init=q_init,
+        )
+
+        elbow, elbow_loss = self.solve_elbow_to_wrist(
+            q_shoulder=q_shoulder,
+            target_wrist=target_wrist,
+            elbow_init=q_init[3],
+        )
+
+        q = self.clamp_q([q_shoulder[0], q_shoulder[1], q_shoulder[2], elbow])
+
+        elbow_pos, wrist_pos = self.fk_wrist(q)
+
+        debug = {
+            'shoulder_loss': shoulder_loss,
+            'elbow_loss': elbow_loss,
+            'elbow_error': math.sqrt(sq_dist(elbow_pos, target_elbow)),
+            'wrist_error': math.sqrt(sq_dist(wrist_pos, target_wrist)),
+        }
+
+        return q, debug
 
 
 class CsvCommandLogger:
@@ -303,38 +454,30 @@ class CsvCommandLogger:
             'source',
             'valid',
             'manual_enabled',
-            'is_calibrated',
 
-            'left_upper_local_x',
-            'left_upper_local_y',
-            'left_upper_local_z',
-            'right_upper_local_x',
-            'right_upper_local_y',
-            'right_upper_local_z',
+            'left_target_elbow_x',
+            'left_target_elbow_y',
+            'left_target_elbow_z',
+            'left_target_wrist_x',
+            'left_target_wrist_y',
+            'left_target_wrist_z',
 
-            'left_elevation',
-            'right_elevation',
-            'left_forward',
-            'right_forward',
+            'right_target_elbow_x',
+            'right_target_elbow_y',
+            'right_target_elbow_z',
+            'right_target_wrist_x',
+            'right_target_wrist_y',
+            'right_target_wrist_z',
 
-            'left_elbow_flex',
-            'right_elbow_flex',
+            'left_shoulder_loss',
+            'left_elbow_loss',
+            'left_elbow_error',
+            'left_wrist_error',
 
-            'left_wrist_rel_y',
-            'right_wrist_rel_y',
-            'left_mid_upper_y',
-            'right_mid_upper_y',
-            'left_palm_above',
-            'right_palm_above',
-            'left_elbow_plane_flip',
-            'right_elbow_plane_flip',
-
-            'safety_active',
-            'hard_reset',
-            'left_elbow_max',
-            'right_elbow_max',
-            'left_elbow_over',
-            'right_elbow_over',
+            'right_shoulder_loss',
+            'right_elbow_loss',
+            'right_elbow_error',
+            'right_wrist_error',
         ] + FULL_JOINTS
 
         self.writer.writerow(header)
@@ -346,51 +489,40 @@ class CsvCommandLogger:
         source: str,
         valid: bool,
         manual_enabled: bool,
-        is_calibrated: bool,
         joint_values: Dict[str, float],
-        raw: Optional[Dict[str, float]],
-        safety: Optional[Dict[str, float]],
+        debug: Optional[Dict[str, float]] = None,
     ):
-        raw = raw or {}
-        safety = safety or {}
+        debug = debug or {}
 
         row = [
             f'{time_sec:.6f}',
             source,
             int(valid),
             int(manual_enabled),
-            int(is_calibrated),
 
-            f"{raw.get('left_upper_local_x', 0.0):.6f}",
-            f"{raw.get('left_upper_local_y', 0.0):.6f}",
-            f"{raw.get('left_upper_local_z', 0.0):.6f}",
-            f"{raw.get('right_upper_local_x', 0.0):.6f}",
-            f"{raw.get('right_upper_local_y', 0.0):.6f}",
-            f"{raw.get('right_upper_local_z', 0.0):.6f}",
+            f"{debug.get('left_target_elbow_x', 0.0):.6f}",
+            f"{debug.get('left_target_elbow_y', 0.0):.6f}",
+            f"{debug.get('left_target_elbow_z', 0.0):.6f}",
+            f"{debug.get('left_target_wrist_x', 0.0):.6f}",
+            f"{debug.get('left_target_wrist_y', 0.0):.6f}",
+            f"{debug.get('left_target_wrist_z', 0.0):.6f}",
 
-            f"{raw.get('left_elevation', 0.0):.6f}",
-            f"{raw.get('right_elevation', 0.0):.6f}",
-            f"{raw.get('left_forward', 0.0):.6f}",
-            f"{raw.get('right_forward', 0.0):.6f}",
+            f"{debug.get('right_target_elbow_x', 0.0):.6f}",
+            f"{debug.get('right_target_elbow_y', 0.0):.6f}",
+            f"{debug.get('right_target_elbow_z', 0.0):.6f}",
+            f"{debug.get('right_target_wrist_x', 0.0):.6f}",
+            f"{debug.get('right_target_wrist_y', 0.0):.6f}",
+            f"{debug.get('right_target_wrist_z', 0.0):.6f}",
 
-            f"{raw.get('left_elbow_flex', 0.0):.6f}",
-            f"{raw.get('right_elbow_flex', 0.0):.6f}",
+            f"{debug.get('left_shoulder_loss', 0.0):.6f}",
+            f"{debug.get('left_elbow_loss', 0.0):.6f}",
+            f"{debug.get('left_elbow_error', 0.0):.6f}",
+            f"{debug.get('left_wrist_error', 0.0):.6f}",
 
-            f"{raw.get('left_wrist_rel_y', 0.0):.6f}",
-            f"{raw.get('right_wrist_rel_y', 0.0):.6f}",
-            f"{raw.get('left_mid_upper_y', 0.0):.6f}",
-            f"{raw.get('right_mid_upper_y', 0.0):.6f}",
-            int(raw.get('left_palm_above', 0.0)),
-            int(raw.get('right_palm_above', 0.0)),
-            int(raw.get('left_elbow_plane_flip', 0.0)),
-            int(raw.get('right_elbow_plane_flip', 0.0)),
-
-            int(safety.get('safety_active', 0.0)),
-            int(safety.get('hard_reset', 0.0)),
-            f"{safety.get('left_elbow_max', 0.0):.6f}",
-            f"{safety.get('right_elbow_max', 0.0):.6f}",
-            f"{safety.get('left_elbow_over', 0.0):.6f}",
-            f"{safety.get('right_elbow_over', 0.0):.6f}",
+            f"{debug.get('right_shoulder_loss', 0.0):.6f}",
+            f"{debug.get('right_elbow_loss', 0.0):.6f}",
+            f"{debug.get('right_elbow_error', 0.0):.6f}",
+            f"{debug.get('right_wrist_error', 0.0):.6f}",
         ]
 
         for joint in FULL_JOINTS:
@@ -410,41 +542,38 @@ class RetargetNode(Node):
     def __init__(self):
         super().__init__('retarget_node')
 
-        self.alpha = float(self.declare_parameter('smoothing_alpha', 0.20).value)
-
-        # При срабатывании soft safety локоть приводим к пределу мягче.
-        self.safety_alpha = float(self.declare_parameter('safety_alpha', 0.10).value)
-
+        self.alpha = float(self.declare_parameter('smoothing_alpha', 0.24).value)
         self.min_visibility = float(self.declare_parameter('min_visibility', 0.15).value)
 
-        self.roll_scale_up = float(self.declare_parameter('roll_scale_up', 1.35).value)
-        self.roll_scale_down = float(self.declare_parameter('roll_scale_down', 2.00).value)
-
-        self.pitch_scale = float(self.declare_parameter('pitch_scale', 0.45).value)
-        self.elbow_scale = float(self.declare_parameter('elbow_scale', 1.0).value)
-
-        self.enable_pitch = bool(self.declare_parameter('enable_pitch', False).value)
-        self.enable_elbow_plane_flip = bool(
-            self.declare_parameter('enable_elbow_plane_flip', True).value
-        )
-
-        self.plane_flip_margin = float(self.declare_parameter('plane_flip_margin', 0.03).value)
-
-        self.human_zero: Optional[Dict[str, float]] = None
-        self.last_raw: Optional[Dict[str, float]] = None
+        self.left_ik = SequentialArmIKSolver('left')
+        self.right_ik = SequentialArmIKSolver('right')
 
         self.prev = dict(FULL_ZERO)
-        self.is_calibrated = False
 
-        self.manual_enabled = False
-        self.manual_joint_values = dict(FULL_ZERO)
+        self.left_q = [
+            FULL_ZERO['left_shoulder_pitch_joint'],
+            FULL_ZERO['left_shoulder_roll_joint'],
+            FULL_ZERO['left_shoulder_yaw_joint'],
+            FULL_ZERO['left_elbow_joint'],
+        ]
+
+        self.right_q = [
+            FULL_ZERO['right_shoulder_pitch_joint'],
+            FULL_ZERO['right_shoulder_roll_joint'],
+            FULL_ZERO['right_shoulder_yaw_joint'],
+            FULL_ZERO['right_elbow_joint'],
+        ]
 
         self.left_plane_flip = False
         self.right_plane_flip = False
 
-        self.safety_layer = AdaptiveSafetyLayer()
-        self.safety_latched = False
-        self.last_safety_info: Dict[str, float] = {}
+        self.manual_enabled = False
+        self.manual_joint_values = dict(FULL_ZERO)
+
+        self.last_debug: Dict[str, float] = {}
+        self.left_plane_flip = False
+        self.right_plane_flip = False
+
 
         self.csv_logger = CsvCommandLogger(os.path.join(os.getcwd(), 'logs'))
         self.get_logger().info(f'Command CSV log: {self.csv_logger.path}')
@@ -458,16 +587,15 @@ class RetargetNode(Node):
         self.js_pub = self.create_publisher(JointState, '/joint_states', 10)
         self.debug_pub = self.create_publisher(JointState, '/retarget/joint_states_debug', 10)
         self.status_pub = self.create_publisher(String, '/teleop/status', 10)
-        self.safety_status_pub = self.create_publisher(String, '/teleop/safety_status', 10)
 
         self.timer = self.create_timer(0.05, self.on_timer)
 
         self.frame_count = 0
 
-        self.get_logger().info('Retarget node started: 3D body-frame + elbow plane flip + adaptive safety.')
-        self.get_logger().info('Safety: adaptive elbow max depends on shoulder roll/yaw.')
-        self.get_logger().info('Soft violation: elbow is smoothly limited.')
-        self.get_logger().info('Hard violation > 10 deg: default reset pose, calibration disabled.')
+        self.get_logger().info('Retarget node started: sequential IK mode.')
+        self.get_logger().info('Stage 1: shoulder IK -> elbow target.')
+        self.get_logger().info('Stage 2: elbow IK -> wrist target relative to elbow.')
+        self.get_logger().info('C = reset IK filter, R = default pose.')
 
     def now_sec(self) -> float:
         return self.get_clock().now().nanoseconds * 1e-9
@@ -480,274 +608,62 @@ class RetargetNode(Node):
             if name in FULL_JOINTS:
                 self.manual_joint_values[name] = float(pos)
 
-    def publish_status(self, text: str):
-        msg = String()
-        msg.data = text
-        self.status_pub.publish(msg)
-
-    def publish_safety_status(self, text: str):
-        msg = String()
-        msg.data = text
-        self.safety_status_pub.publish(msg)
-
-    def on_timer(self):
-        if self.safety_latched:
-            self.publish_status('SAFETY_LATCHED_RESET_REQUIRED')
-            self.publish_safety_status('SAFETY_LATCHED: press R or recalibrate with C')
-            self.publish_command_and_joint_states(
-                FULL_ZERO,
-                valid=False,
-                source='safety_latched_zero',
-                raw=self.last_raw,
-                safety=self.last_safety_info,
-            )
-            return
-
-        if self.manual_enabled:
-            self.publish_status('MANUAL_SLIDER_OVERRIDE')
-
-            safe, safety_info, hard_reset, reason = self.safety_layer.apply(self.manual_joint_values)
-
-            if hard_reset:
-                self.trigger_safety_reset(reason, safety_info)
-                return
-
-            self.publish_safety_status('OK_MANUAL' if not safety_info.get('safety_active') else 'SOFT_LIMIT_MANUAL')
-
-            self.publish_command_and_joint_states(
-                safe,
-                valid=True,
-                source='manual_slider',
-                raw=self.last_raw,
-                safety=safety_info,
-            )
-            return
-
-        self.publish_status('ACTIVE' if self.is_calibrated else 'WAITING_FOR_CALIBRATION')
-
-        if not self.is_calibrated:
-            self.publish_command_and_joint_states(
-                FULL_ZERO,
-                valid=False,
-                source='zero_waiting',
-                raw=self.last_raw,
-                safety=self.last_safety_info,
-            )
-
-    def trigger_safety_reset(self, reason: str, safety_info: Dict[str, float]):
-        self.get_logger().error(f'SAFETY HARD RESET: {reason}')
-
-        self.human_zero = None
-        self.is_calibrated = False
+    def reset_filter(self):
         self.prev = dict(FULL_ZERO)
-        self.safety_latched = True
-        self.last_safety_info = dict(safety_info)
 
-        self.publish_safety_status(f'HARD_RESET: {reason}')
+        self.left_q = [
+            FULL_ZERO['left_shoulder_pitch_joint'],
+            FULL_ZERO['left_shoulder_roll_joint'],
+            FULL_ZERO['left_shoulder_yaw_joint'],
+            FULL_ZERO['left_elbow_joint'],
+        ]
 
-        self.publish_command_and_joint_states(
-            FULL_ZERO,
-            valid=False,
-            source='safety_hard_reset_zero',
-            raw=self.last_raw,
-            safety=safety_info,
-        )
+        self.right_q = [
+            FULL_ZERO['right_shoulder_pitch_joint'],
+            FULL_ZERO['right_shoulder_roll_joint'],
+            FULL_ZERO['right_shoulder_yaw_joint'],
+            FULL_ZERO['right_elbow_joint'],
+        ]
+
+        self.left_plane_flip = False
+        self.right_plane_flip = False
 
     def on_control(self, msg: String):
         cmd = msg.data.strip().lower()
 
-        if cmd in ('reset', 'r'):
-            self.human_zero = None
-            self.last_raw = None
-            self.prev = dict(FULL_ZERO)
-            self.is_calibrated = False
-            self.left_plane_flip = False
-            self.right_plane_flip = False
-            self.safety_latched = False
-            self.last_safety_info = {}
+        if cmd in ('calibrate', 'c'):
+            self.reset_filter()
+            self.get_logger().info('Sequential IK filter reset. No angle calibration is used.')
 
+        elif cmd in ('reset', 'r'):
+            self.reset_filter()
             self.publish_command_and_joint_states(
                 FULL_ZERO,
                 valid=False,
                 source='reset_zero',
-                raw=None,
-                safety=None,
+                debug=self.last_debug,
             )
+            self.get_logger().info('Reset to default pose.')
 
-            self.get_logger().info('Calibration and safety latch reset. Press C to calibrate again.')
-            return
+    def on_timer(self):
+        status = String()
 
-        if cmd in ('calibrate', 'c'):
-            if self.last_raw is None:
-                self.get_logger().warn('Cannot calibrate: no valid pose received yet.')
-                return
-
-            self.safety_latched = False
-            self.human_zero = dict(self.last_raw)
-            self.prev = dict(FULL_ZERO)
-            self.is_calibrated = True
-
-            self.left_plane_flip = bool(self.last_raw.get('left_elbow_plane_flip', 0.0))
-            self.right_plane_flip = bool(self.last_raw.get('right_elbow_plane_flip', 0.0))
+        if self.manual_enabled:
+            status.data = 'MANUAL_SLIDER_OVERRIDE'
+            self.status_pub.publish(status)
 
             self.publish_command_and_joint_states(
-                FULL_ZERO,
+                self.manual_joint_values,
                 valid=True,
-                source='calibration_zero',
-                raw=self.last_raw,
-                safety=None,
-            )
-
-            self.get_logger().info('Calibration saved.')
-            self.get_logger().info(f'human_zero = {self.human_zero}')
-            return
-
-    def scale_elevation_delta(self, delta: float) -> float:
-        if delta >= 0.0:
-            return self.roll_scale_up * delta
-        return self.roll_scale_down * delta
-
-    def smooth_to_target(self, target: Dict[str, float], safety_info: Dict[str, float]) -> Dict[str, float]:
-        smoothed = dict(FULL_ZERO)
-
-        safety_active = bool(safety_info.get('safety_active', 0.0))
-        alpha = self.safety_alpha if safety_active else self.alpha
-
-        for joint in FULL_JOINTS:
-            if joint in UPPER_COMMAND_JOINTS:
-                smoothed[joint] = self.prev[joint] * (1.0 - alpha) + target[joint] * alpha
-            else:
-                smoothed[joint] = FULL_ZERO[joint]
-
-            self.prev[joint] = smoothed[joint]
-
-        return smoothed
-
-    def on_pose(self, msg: PoseLandmarks3D):
-        if self.manual_enabled or self.safety_latched:
-            return
-
-        raw = self.compute_raw_features(msg)
-
-        if raw is None:
-            return
-
-        self.last_raw = raw
-
-        if not self.is_calibrated or self.human_zero is None:
-            self.publish_command_and_joint_states(
-                FULL_ZERO,
-                valid=False,
-                source='zero_not_calibrated',
-                raw=raw,
-                safety=self.last_safety_info,
+                source='manual_slider',
+                debug=self.last_debug,
             )
             return
 
-        desired = dict(FULL_ZERO)
+        status.data = 'SEQUENTIAL_IK_ACTIVE_WAITING_FOR_POSE'
+        self.status_pub.publish(status)
 
-        # Shoulder roll: arm elevation
-        left_elev_delta = raw['left_elevation'] - self.human_zero['left_elevation']
-        right_elev_delta = raw['right_elevation'] - self.human_zero['right_elevation']
-
-        desired['left_shoulder_roll_joint'] = (
-            FULL_ZERO['left_shoulder_roll_joint']
-            + self.scale_elevation_delta(left_elev_delta)
-        )
-
-        desired['right_shoulder_roll_joint'] = (
-            FULL_ZERO['right_shoulder_roll_joint']
-            + self.scale_elevation_delta(right_elev_delta)
-        )
-
-        # Optional pitch
-        if self.enable_pitch:
-            left_forward_delta = raw['left_forward'] - self.human_zero['left_forward']
-            right_forward_delta = raw['right_forward'] - self.human_zero['right_forward']
-
-            desired['left_shoulder_pitch_joint'] = (
-                FULL_ZERO['left_shoulder_pitch_joint']
-                + self.pitch_scale * left_forward_delta
-            )
-
-            desired['right_shoulder_pitch_joint'] = (
-                FULL_ZERO['right_shoulder_pitch_joint']
-                + self.pitch_scale * right_forward_delta
-            )
-        else:
-            desired['left_shoulder_pitch_joint'] = 0.0
-            desired['right_shoulder_pitch_joint'] = 0.0
-
-        # Yaw as elbow plane flip
-        if self.enable_elbow_plane_flip:
-            desired['left_shoulder_yaw_joint'] = math.pi if raw['left_elbow_plane_flip'] else 0.0
-
-            # Для правого плеча знак противоположный.
-            # Так обе руки при flip проходят через переднюю сторону корпуса,
-            # а не проворачиваются в разные стороны.
-            desired['right_shoulder_yaw_joint'] = -math.pi if raw['right_elbow_plane_flip'] else 0.0
-        else:
-            desired['left_shoulder_yaw_joint'] = 0.0
-            desired['right_shoulder_yaw_joint'] = 0.0
-
-        # Elbow absolute flex
-        desired['left_elbow_joint'] = 0.05 + self.elbow_scale * raw['left_elbow_flex']
-        desired['right_elbow_joint'] = 0.05 + self.elbow_scale * raw['right_elbow_flex']
-
-        # Adaptive safety
-        safe_target, safety_info, hard_reset, reason = self.safety_layer.apply(desired)
-        self.last_safety_info = dict(safety_info)
-
-        if hard_reset:
-            self.trigger_safety_reset(reason, safety_info)
-            return
-
-        smoothed = self.smooth_to_target(safe_target, safety_info)
-
-        if safety_info.get('safety_active', 0.0):
-            self.publish_safety_status(
-                'SOFT_LIMIT: '
-                f"L_over={safety_info.get('left_elbow_over', 0.0):.3f}, "
-                f"R_over={safety_info.get('right_elbow_over', 0.0):.3f}"
-            )
-        else:
-            self.publish_safety_status('OK')
-
-        self.frame_count += 1
-
-        if self.frame_count % 20 == 0:
-            self.get_logger().info(
-                'cmd: '
-                f"L_roll={smoothed['left_shoulder_roll_joint']:.3f}, "
-                f"R_roll={smoothed['right_shoulder_roll_joint']:.3f}, "
-                f"L_yaw={smoothed['left_shoulder_yaw_joint']:.3f}, "
-                f"R_yaw={smoothed['right_shoulder_yaw_joint']:.3f}, "
-                f"L_elb={smoothed['left_elbow_joint']:.3f}, "
-                f"R_elb={smoothed['right_elbow_joint']:.3f}; "
-                'safety: '
-                f"Lmax={safety_info.get('left_elbow_max', 0.0):.3f}, "
-                f"Rmax={safety_info.get('right_elbow_max', 0.0):.3f}, "
-                f"active={int(safety_info.get('safety_active', 0.0))}"
-            )
-
-        self.publish_command_and_joint_states(
-            smoothed,
-            valid=True,
-            source='mediapipe_3d_plane_flip_safety_retarget',
-            raw=raw,
-            safety=safety_info,
-        )
-
-    def update_plane_flip(self, current_flip: bool, wrist_rel_y: float, mid_upper_y: float) -> bool:
-        if wrist_rel_y > mid_upper_y + self.plane_flip_margin:
-            return False
-
-        if wrist_rel_y < mid_upper_y - self.plane_flip_margin:
-            return True
-
-        return current_flip
-
-    def compute_raw_features(self, msg: PoseLandmarks3D) -> Optional[Dict[str, float]]:
+    def parse_pose(self, msg: PoseLandmarks3D) -> Optional[Dict[str, Point]]:
         if not msg.valid or len(msg.names) == 0:
             return None
 
@@ -768,29 +684,42 @@ class RetargetNode(Node):
         for i, name in enumerate(msg.names):
             if i < len(msg.x) and i < len(msg.y) and i < len(msg.z):
                 pts[name] = (float(msg.x[i]), float(msg.y[i]), float(msg.z[i]))
-            vis[name] = float(msg.visibility[i]) if i < len(msg.visibility) else 1.0
+
+            if i < len(msg.visibility):
+                vis[name] = float(msg.visibility[i])
+            else:
+                vis[name] = 1.0
 
         if any(k not in pts for k in required):
-            self.get_logger().warn(f'Missing landmarks. Got: {list(pts.keys())}', throttle_duration_sec=2.0)
+            self.get_logger().warn(
+                f'Missing landmarks. Got: {list(pts.keys())}',
+                throttle_duration_sec=2.0,
+            )
             return None
 
-        must_be_visible = ['left_shoulder', 'right_shoulder', 'left_elbow', 'right_elbow']
+        must_be_visible = [
+            'left_shoulder',
+            'right_shoulder',
+            'left_elbow',
+            'right_elbow',
+        ]
 
         if any(vis.get(k, 0.0) < self.min_visibility for k in must_be_visible):
             self.get_logger().warn(
                 'Low visibility: '
-                f"LS={vis.get('left_shoulder', 0):.2f}, RS={vis.get('right_shoulder', 0):.2f}, "
-                f"LE={vis.get('left_elbow', 0):.2f}, RE={vis.get('right_elbow', 0):.2f}",
-                throttle_duration_sec=2.0
+                f"LS={vis.get('left_shoulder', 0):.2f}, "
+                f"RS={vis.get('right_shoulder', 0):.2f}, "
+                f"LE={vis.get('left_elbow', 0):.2f}, "
+                f"RE={vis.get('right_elbow', 0):.2f}",
+                throttle_duration_sec=2.0,
             )
             return None
 
+        return pts
+
+    def build_body_frame(self, pts: Dict[str, Point]) -> Optional[Tuple[Point, Point, Point]]:
         lsh = pts['left_shoulder']
         rsh = pts['right_shoulder']
-        lel = pts['left_elbow']
-        rel = pts['right_elbow']
-        lwr = pts['left_wrist']
-        rwr = pts['right_wrist']
         lhip = pts['left_hip']
         rhip = pts['right_hip']
 
@@ -803,87 +732,248 @@ class RetargetNode(Node):
         body_up = normalize(sub(body_up_raw, mul(body_right, dot(body_up_raw, body_right))))
         body_front = normalize(cross(body_right, body_up))
 
-        if norm(body_front) < 1e-6:
+        if norm(body_right) < 1e-6 or norm(body_up) < 1e-6 or norm(body_front) < 1e-6:
             return None
 
-        left_upper_vec = sub(lel, lsh)
-        right_upper_vec = sub(rel, rsh)
+        return body_right, body_up, body_front
 
-        left_upper = normalize(left_upper_vec)
-        right_upper = normalize(right_upper_vec)
+    def map_human_vec_to_robot(self, v_human: Point, body_right: Point, body_up: Point, body_front: Point) -> Point:
+        """
+        human body local:
+            local_right
+            local_up
+            local_front
 
-        lu = local_components(left_upper, body_right, body_up, body_front)
-        ru = local_components(right_upper, body_right, body_up, body_front)
+        robot arm local:
+            x = front
+            y = side
+            z = up
 
-        left_elevation = math.atan2(lu[1], math.sqrt(lu[0] * lu[0] + lu[2] * lu[2]))
-        right_elevation = math.atan2(ru[1], math.sqrt(ru[0] * ru[0] + ru[2] * ru[2]))
+        y = -local_right:
+            левая рука получает +Y,
+            правая рука получает -Y.
+        """
 
-        left_forward = math.atan2(lu[2], math.sqrt(lu[0] * lu[0] + lu[1] * lu[1]))
-        right_forward = math.atan2(ru[2], math.sqrt(ru[0] * ru[0] + ru[1] * ru[1]))
+        local_right, local_up, local_front = local_components(v_human, body_right, body_up, body_front)
 
-        left_elbow_flex = clamp(math.pi - angle_between(sub(lsh, lel), sub(lwr, lel)), 0.0, 2.2)
-        right_elbow_flex = clamp(math.pi - angle_between(sub(rsh, rel), sub(rwr, rel)), 0.0, 2.2)
-
-        left_wrist_rel = local_components(sub(lwr, lsh), body_right, body_up, body_front)
-        right_wrist_rel = local_components(sub(rwr, rsh), body_right, body_up, body_front)
-
-        left_elbow_rel = local_components(sub(lel, lsh), body_right, body_up, body_front)
-        right_elbow_rel = local_components(sub(rel, rsh), body_right, body_up, body_front)
-
-        left_wrist_rel_y = left_wrist_rel[1]
-        right_wrist_rel_y = right_wrist_rel[1]
-
-        left_mid_upper_y = 0.5 * left_elbow_rel[1]
-        right_mid_upper_y = 0.5 * right_elbow_rel[1]
-
-        left_palm_above = left_wrist_rel_y > left_mid_upper_y
-        right_palm_above = right_wrist_rel_y > right_mid_upper_y
-
-        self.left_plane_flip = self.update_plane_flip(
-            self.left_plane_flip,
-            left_wrist_rel_y,
-            left_mid_upper_y,
+        return (
+            local_front,
+            -local_right,
+            local_up,
         )
 
-        self.right_plane_flip = self.update_plane_flip(
-            self.right_plane_flip,
-            right_wrist_rel_y,
-            right_mid_upper_y,
+    def build_sequential_targets(
+        self,
+        side: str,
+        shoulder: Point,
+        elbow: Point,
+        wrist: Point,
+        body_right: Point,
+        body_up: Point,
+        body_front: Point,
+    ) -> Tuple[Point, Point, bool]:
+        """
+        Строим target_elbow и target_wrist последовательно.
+
+        Также определяем дискретную плоскость локтя:
+
+            wrist выше середины shoulder->elbow  => plane_flip = False
+            wrist ниже середины shoulder->elbow  => plane_flip = True
+
+        В качестве "ладони" пока используем wrist, потому что MediaPipe Pose
+        не даёт полную кисть. Позже можно заменить на MediaPipe Hands.
+        """
+
+        human_upper = sub(elbow, shoulder)
+        human_forearm = sub(wrist, elbow)
+
+        robot_upper_dir = normalize(self.map_human_vec_to_robot(human_upper, body_right, body_up, body_front))
+        robot_forearm_dir = normalize(self.map_human_vec_to_robot(human_forearm, body_right, body_up, body_front))
+
+        if norm(robot_upper_dir) < 1e-6:
+            robot_upper_dir = (0.0, 1.0 if side == 'left' else -1.0, 0.0)
+
+        if norm(robot_forearm_dir) < 1e-6:
+            robot_forearm_dir = robot_upper_dir
+
+        target_elbow = mul(robot_upper_dir, ROBOT_UPPER_ARM)
+        target_wrist = add(target_elbow, mul(robot_forearm_dir, ROBOT_FOREARM))
+
+        # Определяем положение wrist относительно середины shoulder->elbow
+        # в системе координат корпуса.
+        wrist_rel = local_components(sub(wrist, shoulder), body_right, body_up, body_front)
+        elbow_rel = local_components(sub(elbow, shoulder), body_right, body_up, body_front)
+
+        wrist_y = wrist_rel[1]
+        mid_upper_y = 0.5 * elbow_rel[1]
+
+        # Небольшая мёртвая зона, чтобы plane flip не дрожал на границе.
+        margin = 0.03
+
+        if side == 'left':
+            previous = getattr(self, 'left_plane_flip', False)
+        else:
+            previous = getattr(self, 'right_plane_flip', False)
+
+        if wrist_y < mid_upper_y - margin:
+            plane_flip = True
+        elif wrist_y > mid_upper_y + margin:
+            plane_flip = False
+        else:
+            plane_flip = previous
+
+        if side == 'left':
+            self.left_plane_flip = plane_flip
+        else:
+            self.right_plane_flip = plane_flip
+
+        return target_elbow, target_wrist, plane_flip
+
+
+    def on_pose(self, msg: PoseLandmarks3D):
+        if self.manual_enabled:
+            return
+
+        if 'world' not in msg.header.frame_id:
+            self.get_logger().warn(
+                f'Sequential IK needs pose_world_landmarks, got frame_id={msg.header.frame_id}',
+                throttle_duration_sec=2.0,
+            )
+            return
+
+        pts = self.parse_pose(msg)
+        if pts is None:
+            return
+
+        body_frame = self.build_body_frame(pts)
+        if body_frame is None:
+            return
+
+        body_right, body_up, body_front = body_frame
+
+        left_target_elbow, left_target_wrist, left_flip = self.build_sequential_targets(
+            'left',
+            pts['left_shoulder'],
+            pts['left_elbow'],
+            pts['left_wrist'],
+            body_right,
+            body_up,
+            body_front,
         )
 
-        return {
-            'left_upper_local_x': lu[0],
-            'left_upper_local_y': lu[1],
-            'left_upper_local_z': lu[2],
-            'right_upper_local_x': ru[0],
-            'right_upper_local_y': ru[1],
-            'right_upper_local_z': ru[2],
+        right_target_elbow, right_target_wrist, right_flip = self.build_sequential_targets(
+            'right',
+            pts['right_shoulder'],
+            pts['right_elbow'],
+            pts['right_wrist'],
+            body_right,
+            body_up,
+            body_front,
+        )
 
-            'left_elevation': left_elevation,
-            'right_elevation': right_elevation,
-            'left_forward': left_forward,
-            'right_forward': right_forward,
+        # Дискретная плоскость локтя:
+        # левая рука:  0 или +pi
+        # правая рука: 0 или -pi
+        # Так обе руки проворачиваются через переднюю сторону.
+        left_yaw_fixed = -math.pi if left_flip else 0.0
+        right_yaw_fixed = math.pi if right_flip else 0.0
 
-            'left_elbow_flex': left_elbow_flex,
-            'right_elbow_flex': right_elbow_flex,
+        self.left_q, left_dbg = self.left_ik.solve_sequential(
+            left_target_elbow,
+            left_target_wrist,
+            left_yaw_fixed,
+            self.left_q,
+        )
 
-            'left_wrist_rel_y': left_wrist_rel_y,
-            'right_wrist_rel_y': right_wrist_rel_y,
-            'left_mid_upper_y': left_mid_upper_y,
-            'right_mid_upper_y': right_mid_upper_y,
-            'left_palm_above': 1.0 if left_palm_above else 0.0,
-            'right_palm_above': 1.0 if right_palm_above else 0.0,
-            'left_elbow_plane_flip': 1.0 if self.left_plane_flip else 0.0,
-            'right_elbow_plane_flip': 1.0 if self.right_plane_flip else 0.0,
+        self.right_q, right_dbg = self.right_ik.solve_sequential(
+            right_target_elbow,
+            right_target_wrist,
+            right_yaw_fixed,
+            self.right_q,
+        )
+
+        target = dict(FULL_ZERO)
+
+        for joint, value in zip(self.left_ik.joints, self.left_q):
+            target[joint] = value
+
+        for joint, value in zip(self.right_ik.joints, self.right_q):
+            target[joint] = value
+
+        smoothed = dict(FULL_ZERO)
+
+        for joint in FULL_JOINTS:
+            if joint in UPPER_COMMAND_JOINTS:
+                smoothed[joint] = self.prev[joint] * (1.0 - self.alpha) + target[joint] * self.alpha
+            else:
+                smoothed[joint] = FULL_ZERO[joint]
+
+            self.prev[joint] = smoothed[joint]
+
+        debug = {
+            'left_target_elbow_x': left_target_elbow[0],
+            'left_target_elbow_y': left_target_elbow[1],
+            'left_target_elbow_z': left_target_elbow[2],
+            'left_target_wrist_x': left_target_wrist[0],
+            'left_target_wrist_y': left_target_wrist[1],
+            'left_target_wrist_z': left_target_wrist[2],
+
+            'right_target_elbow_x': right_target_elbow[0],
+            'right_target_elbow_y': right_target_elbow[1],
+            'right_target_elbow_z': right_target_elbow[2],
+            'right_target_wrist_x': right_target_wrist[0],
+            'right_target_wrist_y': right_target_wrist[1],
+            'right_target_wrist_z': right_target_wrist[2],
+
+            'left_shoulder_loss': left_dbg['shoulder_loss'],
+            'left_elbow_loss': left_dbg['elbow_loss'],
+            'left_elbow_error': left_dbg['elbow_error'],
+            'left_wrist_error': left_dbg['wrist_error'],
+
+            'right_shoulder_loss': right_dbg['shoulder_loss'],
+            'right_elbow_loss': right_dbg['elbow_loss'],
+            'right_elbow_error': right_dbg['elbow_error'],
+            'right_wrist_error': right_dbg['wrist_error'],
+
+            'left_plane_flip': 1.0 if left_flip else 0.0,
+            'right_plane_flip': 1.0 if right_flip else 0.0,
+            'left_yaw_fixed': left_yaw_fixed,
+            'right_yaw_fixed': right_yaw_fixed,
         }
+
+        self.last_debug = debug
+
+        valid = (
+            left_dbg['elbow_error'] < 0.12 and
+            right_dbg['elbow_error'] < 0.12 and
+            left_dbg['wrist_error'] < 0.18 and
+            right_dbg['wrist_error'] < 0.18
+        )
+
+        self.frame_count += 1
+
+        if self.frame_count % 20 == 0:
+            self.get_logger().info(
+                'SEQ IK: '
+                f"L_q={[round(v, 3) for v in self.left_q]}, "
+                f"R_q={[round(v, 3) for v in self.right_q]}, "
+                f"L_err(e/w)=({left_dbg['elbow_error']:.3f}/{left_dbg['wrist_error']:.3f}), "
+                f"R_err(e/w)=({right_dbg['elbow_error']:.3f}/{right_dbg['wrist_error']:.3f})"
+            )
+
+        self.publish_command_and_joint_states(
+            smoothed,
+            valid=valid,
+            source='sequential_ik_elbow_then_wrist',
+            debug=debug,
+        )
 
     def publish_command_and_joint_states(
         self,
         joint_values: Dict[str, float],
         valid: bool,
         source: str,
-        raw: Optional[Dict[str, float]],
-        safety: Optional[Dict[str, float]],
+        debug: Optional[Dict[str, float]] = None,
     ):
         cmd = UpperBodyCommand()
         cmd.header.stamp = self.get_clock().now().to_msg()
@@ -907,10 +997,8 @@ class RetargetNode(Node):
             source=source,
             valid=valid,
             manual_enabled=self.manual_enabled,
-            is_calibrated=self.is_calibrated,
             joint_values=joint_values,
-            raw=raw,
-            safety=safety,
+            debug=debug,
         )
 
     def destroy_node(self):
@@ -918,6 +1006,7 @@ class RetargetNode(Node):
             self.csv_logger.close()
         except Exception:
             pass
+
         super().destroy_node()
 
 
