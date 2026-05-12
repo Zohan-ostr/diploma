@@ -370,21 +370,30 @@ class H1Sdk2PyUpperBodyBridge(Node):
         self.lowcmd_pub.Write(self.msg)
 
 
+
+
 def main():
-    sdk_domain = int(os.environ.get("UNITREE_SDK_DOMAIN", "1"))
-    iface = os.environ.get("UNITREE_NET_IFACE", None)
+    # Unitree MuJoCo сейчас реально работает только так:
+    #   ChannelFactoryInitialize(42, "wlp0s20f3")
+    sdk_domain = int(os.environ.get("UNITREE_DOMAIN_ID", os.environ.get("ROS_DOMAIN_ID", "42")))
+    iface = os.environ.get("UNITREE_NET_IFACE", "wlp0s20f3")
+
+    print(f"[H1 BRIDGE] SDK2PY INIT OVERRIDE: domain={sdk_domain}, iface={iface!r}", flush=True)
 
     if iface:
-        ChannelFactoryInitialize(sdk_domain, networkInterface=iface)
+        ChannelFactoryInitialize(sdk_domain, iface)
     else:
         ChannelFactoryInitialize(sdk_domain)
 
     rclpy.init()
     node = H1Sdk2PyUpperBodyBridge()
+    node.get_logger().info(f"SDK2PY INIT OVERRIDE: domain={sdk_domain}, iface={iface!r}")
+
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
         pass
+
     node.destroy_node()
     rclpy.shutdown()
 

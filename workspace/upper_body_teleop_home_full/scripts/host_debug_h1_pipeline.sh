@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -eo pipefail
 
 CONTAINER_NAME="${CONTAINER_NAME:-h1_mujoco_sim}"
 ROS_DOMAIN_ID_VALUE="${ROS_DOMAIN_ID_VALUE:-42}"
@@ -44,12 +44,15 @@ docker exec -it \
   -e LOWSTATE_TOPIC="$LOWSTATE_TOPIC" \
   "$CID" bash -lc 'cat > /tmp/debug_h1_pipeline.sh <<'"'"'INNER_BASH'"'"'
 #!/usr/bin/env bash
-set -u
+set -eo pipefail
 
 cd /workspace || exit 1
 
+# ROS setup scripts may reference unset variables, so do not use set -u here.
 source /opt/ros/humble/setup.bash
 source /workspace/install/setup.bash 2>/dev/null || true
+
+set -u
 
 export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-42}"
 export ROS_LOCALHOST_ONLY="${ROS_LOCALHOST_ONLY:-0}"
