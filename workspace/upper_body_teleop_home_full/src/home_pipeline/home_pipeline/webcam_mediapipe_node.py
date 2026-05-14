@@ -41,6 +41,7 @@ class WebcamMediaPipeNode(Node):
 
         self.pub = self.create_publisher(PoseLandmarks3D, '/pose/landmarks', 10)
         self.control_pub = self.create_publisher(String, '/teleop/control', 10)
+        self.teleop_control_pub = self.create_publisher(String, '/teleop/control', 10)
 
         self.cap = cv2.VideoCapture(self.camera_index)
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
@@ -235,6 +236,10 @@ class WebcamMediaPipeNode(Node):
             cv2.imshow('Home webcam + MediaPipe pose', preview_frame)
 
             key = cv2.waitKey(1) & 0xFF
+            if key in (ord('c'), ord('C')):
+                self.publish_teleop_control('calibrate')
+            elif key in (ord('r'), ord('R')):
+                self.publish_teleop_control('reset')
 
             calibrate_keys = {ord('c'), ord('C'), 241, 209}
             reset_keys = {ord('r'), ord('R'), 234, 202}
@@ -269,6 +274,16 @@ class WebcamMediaPipeNode(Node):
 
         super().destroy_node()
 
+
+
+    def publish_teleop_control(self, command: str):
+        msg = String()
+        msg.data = command
+        self.teleop_control_pub.publish(msg)
+        try:
+            self.get_logger().info(f"Published /teleop/control: {command}")
+        except Exception:
+            pass
 
 def main():
     rclpy.init()
