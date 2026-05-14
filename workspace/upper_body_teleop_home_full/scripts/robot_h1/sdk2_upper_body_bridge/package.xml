@@ -1,0 +1,16 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>sdk2_h1_upper_body_bridge</name>
+  <version>0.0.1</version>
+  <description>H1 bridge: ROS UpperBodyCommand to UDP and UDP to Unitree SDK2 rt/lowcmd</description>
+  <maintainer email="unitree@example.com">unitree</maintainer>
+  <license>BSD-3-Clause</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <depend>rclcpp</depend>
+  <depend>upper_body_msgs</depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
