@@ -96,12 +96,12 @@ class H1OldRetargetWithTPoseYaw(Node):
         self.declare_parameter("min_wrist_visibility", 0.01)
 
         self.declare_parameter("landmark_alpha", 0.25)
-        self.declare_parameter("joint_alpha", 0.20)
+        self.declare_parameter("joint_alpha", 0.45)
 
         # Меньше, чем раньше, чтобы не было резкого рывка в T-позу.
-        self.declare_parameter("max_joint_step", 0.045)
-        self.declare_parameter("elbow_max_step", 0.090)
-        self.declare_parameter("yaw_max_step", 0.180)
+        self.declare_parameter("max_joint_step", 0.090)
+        self.declare_parameter("elbow_max_step", 0.180)
+        self.declare_parameter("yaw_max_step", 0.300)
 
         self.declare_parameter("map_x_from_z", 1.0)
 
@@ -110,11 +110,15 @@ class H1OldRetargetWithTPoseYaw(Node):
         self.declare_parameter("elbow_gain", 1.35)
 
         # Yaw вниз. Yaw вверх = старый BASE yaw.
-        self.declare_parameter("left_yaw_down", -1.25)
-        self.declare_parameter("right_yaw_down", 1.25)
+        self.declare_parameter("left_yaw_up", 1.74)
+        self.declare_parameter("left_yaw_down", -1.30)
+        self.declare_parameter("right_yaw_up", -1.74)
+        self.declare_parameter("right_yaw_down", 1.30)
 
         # Гистерезис перехода кисти относительно линии плечо->локоть.
         self.declare_parameter("yaw_hysteresis", 0.045)
+        self.declare_parameter("forward_yaw_threshold", 1.50)
+        self.declare_parameter("forward_yaw_blend_width", 0.20)
 
         self.declare_parameter("left_pitch_sign", -1.0)
         self.declare_parameter("right_pitch_sign", -1.0)
@@ -149,9 +153,13 @@ class H1OldRetargetWithTPoseYaw(Node):
         self.roll_gain = float(self.get_parameter("roll_gain").value)
         self.elbow_gain = float(self.get_parameter("elbow_gain").value)
 
+        self.left_yaw_up = float(self.get_parameter("left_yaw_up").value)
         self.left_yaw_down = float(self.get_parameter("left_yaw_down").value)
+        self.right_yaw_up = float(self.get_parameter("right_yaw_up").value)
         self.right_yaw_down = float(self.get_parameter("right_yaw_down").value)
         self.yaw_hysteresis = float(self.get_parameter("yaw_hysteresis").value)
+        self.forward_yaw_threshold = float(self.get_parameter("forward_yaw_threshold").value)
+        self.forward_yaw_blend_width = float(self.get_parameter("forward_yaw_blend_width").value)
 
         self.left_pitch_sign = float(self.get_parameter("left_pitch_sign").value)
         self.right_pitch_sign = float(self.get_parameter("right_pitch_sign").value)
@@ -197,6 +205,7 @@ class H1OldRetargetWithTPoseYaw(Node):
         self.get_logger().info(f"tpose_hold_sec:  {self.tpose_hold_sec}")
         self.get_logger().info(f"BASE_Q:          {np.array2string(self.BASE_Q, precision=3)}")
         self.get_logger().info(f"TPOSE_Q:         {np.array2string(self.TPOSE_Q, precision=3)}")
+        self.get_logger().info(f"yaw_up L/R:      {self.left_yaw_up} / {self.right_yaw_up}")
         self.get_logger().info(f"yaw_down L/R:    {self.left_yaw_down} / {self.right_yaw_down}")
         self.get_logger().info(f"yaw_hysteresis:  {self.yaw_hysteresis}")
 
@@ -332,9 +341,6 @@ class H1OldRetargetWithTPoseYaw(Node):
     def update_yaw_branch(self, side: str, residual_z: float):
         if side == "left":
             old = self.left_yaw_branch
-            # Правильное направление:
-            # wrist выше линии shoulder->elbow -> elbow-up -> BASE yaw
-            # wrist ниже линии shoulder->elbow -> elbow-down -> yaw_down
             if residual_z > self.yaw_hysteresis:
                 self.left_yaw_branch = 0
             elif residual_z < -self.yaw_hysteresis:
@@ -343,9 +349,6 @@ class H1OldRetargetWithTPoseYaw(Node):
                 self.get_logger().info(f"left yaw branch {old}->{self.left_yaw_branch}, residual_z={residual_z:.3f}")
         else:
             old = self.right_yaw_branch
-            # Правильное направление:
-            # wrist выше линии shoulder->elbow -> elbow-up -> BASE yaw
-            # wrist ниже линии shoulder->elbow -> elbow-down -> yaw_down
             if residual_z > self.yaw_hysteresis:
                 self.right_yaw_branch = 0
             elif residual_z < -self.yaw_hysteresis:
@@ -376,6 +379,13 @@ class H1OldRetargetWithTPoseYaw(Node):
 
         residual_z = self.wrist_line_residual_z(sh, el, wr)
 
+        # Depth / forward criterion:
+        # body x-axis is forward. If wrist is farther forward from shoulder
+        # than the upper-arm length, use middle yaw so elbow bends forward.
+        upper_len = max(1e-6, float(np.linalg.norm(upper)))
+        wrist_forward = float(wr[0] - sh[0])
+        forward_ratio = wrist_forward / upper_len
+
         return {
             "elevation": elevation,
             "roll": roll,
@@ -383,6 +393,7 @@ class H1OldRetargetWithTPoseYaw(Node):
             "residual_z": residual_z,
             "upper": upper,
             "fore": fore,
+            "forward_ratio": forward_ratio,
         }
 
     def calibrate_or_wait(self, pts, vis):
@@ -438,6 +449,28 @@ class H1OldRetargetWithTPoseYaw(Node):
         self.get_logger().info(f"rest left:  {self.rest['left']}")
         self.get_logger().info(f"rest right: {self.rest['right']}")
         return True
+
+    def apply_forward_yaw_override(self, side: str, yaw: float, forward_ratio: float) -> float:
+        """
+        If the wrist is far forward, use middle yaw between up/down branches.
+        This makes the elbow bend forward instead of only up/down.
+        """
+        if side == "left":
+            yaw_mid = 0.5 * (self.left_yaw_up + self.left_yaw_down)
+        else:
+            yaw_mid = 0.5 * (self.right_yaw_up + self.right_yaw_down)
+
+        if forward_ratio <= self.forward_yaw_threshold:
+            return yaw
+
+        width = max(1e-6, self.forward_yaw_blend_width)
+        blend = clamp(
+            (forward_ratio - self.forward_yaw_threshold) / width,
+            0.0,
+            1.0,
+        )
+
+        return (1.0 - blend) * yaw + blend * yaw_mid
 
     def compute_q(self, pts):
         lf = self.arm_features(pts, "left")
@@ -507,10 +540,12 @@ class H1OldRetargetWithTPoseYaw(Node):
             bend = angle_between(upper, fore)
 
             if side == "left":
-                yaw = self.BASE_Q[2] if self.left_yaw_branch == 0 else self.left_yaw_down
+                yaw = self.left_yaw_up if self.left_yaw_branch == 0 else self.left_yaw_down
+                yaw = self.apply_forward_yaw_override(side, yaw, float(f.get("forward_ratio", 0.0)))
                 elbow_q = self.BASE_Q[3] - self.elbow_gain * bend
             else:
-                yaw = self.BASE_Q[6] if self.right_yaw_branch == 0 else self.right_yaw_down
+                yaw = self.right_yaw_up if self.right_yaw_branch == 0 else self.right_yaw_down
+                yaw = self.apply_forward_yaw_override(side, yaw, float(f.get("forward_ratio", 0.0)))
                 elbow_q = self.BASE_Q[7] - self.elbow_gain * bend
 
             elbow_q = clamp(elbow_q, -1.10, 2.45)

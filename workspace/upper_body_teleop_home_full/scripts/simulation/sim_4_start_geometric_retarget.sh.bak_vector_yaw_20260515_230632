@@ -4,7 +4,7 @@ set -euo pipefail
 CONTAINER_NAME="${CONTAINER_NAME:-h1_camera_pipeline}"
 
 echo "============================================================"
-echo " SIM 4: START VECTOR FABRIK RETARGET"
+echo " SIM 4: START REALSENSE TWO-STAGE IK RETARGET"
 echo "============================================================"
 echo "CONTAINER_NAME: $CONTAINER_NAME"
 echo "INPUT:          /pose/landmarks"
@@ -47,18 +47,15 @@ me = os.getpid()
 out = subprocess.check_output(["ps", "-eo", "pid=,comm=,args="], text=True)
 
 targets = [
-    "sim_geometric_retarget_tpose_yaw.py",
     "sim_geometric_retarget_old_with_tpose_yaw.py",
     "sim_geometric_retarget_ik2.py",
     "realsense_ik_upper_body_retarget.py",
-    "vector_fabrik_retarget.py",
 ]
 
 for line in out.splitlines():
     parts = line.strip().split(None, 2)
     if len(parts) < 3:
         continue
-
     pid_s, comm, args = parts
     pid = int(pid_s)
 
@@ -75,38 +72,31 @@ PY
 
 sleep 1
 
-python3 /workspace/scripts/robot_h1/vector_fabrik_retarget.py \
+python3 /workspace/scripts/robot_h1/realsense_ik_upper_body_retarget.py \
   --ros-args \
   -p input_topic:=/pose/landmarks \
   -p output_topic:=/upper_body/command_geom \
   -p calibration_topic:=/upper_body/start_calibration \
   -p calibration_frames:=45 \
-  -p landmark_alpha:=0.35 \
-  -p joint_alpha:=0.75 \
-  -p robot_upper_len:=0.31 \
-  -p robot_fore_len:=0.31 \
-  -p pitch_grid:=21 \
-  -p roll_grid:=31 \
-  -p yaw_grid:=81 \
-  -p pitch_window:=1.30 \
-  -p roll_window:=1.60 \
-  -p upper_direction_weight:=1.0 \
-  -p upper_continuity_weight:=0.015 \
-  -p yaw_direction_weight:=1.0 \
-  -p yaw_continuity_weight:=0.05 \
-  -p pitch_geom_gain:=1.0 \
-  -p left_yaw_down:=-1.30 \
-  -p left_yaw_up:=1.74 \
-  -p right_yaw_down:=1.30 \
-  -p right_yaw_up:=-1.74 \
+  -p max_joint_step:=0.090 \
+  -p elbow_max_step:=0.180 \
+  -p yaw_max_step:=0.300 \
+  -p joint_alpha:=0.45 \
+  -p pitch_gain:=1.00 \
+  -p invert_pitch_forward_above_shoulder:=true \
+  -p invert_yaw_forward_above_shoulder:=true \
+  -p invert_fabrik_target_forward_above_shoulder:=true \
+  -p elbow_gain:=1.35 \
   -p left_elbow_straight:=1.57 \
   -p right_elbow_straight:=1.57 \
-  -p elbow_gain:=1.55 \
-  -p elbow_bend_deadzone:=0.015 \
-  -p elbow_bend_response_gain:=1.75 \
-  -p use_calibrated_elbow_bias:=true \
-  -p max_joint_step:=0.180 \
-  -p yaw_max_step:=0.450 \
-  -p elbow_max_step:=0.320 \
-  -p standard_z_sign:=1.0
+  -p elbow_deadzone_rad:=0.20 \
+  -p left_yaw_up:=1.74 \
+  -p right_yaw_up:=-1.74 \
+  -p left_yaw_down:=-1.30 \
+  -p right_yaw_down:=1.30 \
+  -p elbow_only_debug:=false \
+  -p robot_upper_len:=0.31 \
+  -p robot_fore_len:=0.31 \
+  -p fabrik_wrist_weight:=1.00 \
+  -p fabrik_position_weight:=2.00
 '

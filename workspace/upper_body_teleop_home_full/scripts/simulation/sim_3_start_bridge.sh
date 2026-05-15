@@ -7,10 +7,10 @@ cd "$PROJECT_DIR"
 export INPUT_TOPIC="/upper_body/command_geom"
 export TEST_MODE="none"
 
-# Быстрее реакция симуляции
-export ARM_VELOCITY_LIMIT="120.0"
-export KP_LOW="850.0"
-export KD_LOW="18.0"
+# Fast simulation response
+export ARM_VELOCITY_LIMIT="250.0"
+export KP_LOW="1300.0"
+export KD_LOW="25.0"
 export COMMAND_TIMEOUT_SEC="0.7"
 
 export ROS_DOMAIN_ID_VALUE="42"
