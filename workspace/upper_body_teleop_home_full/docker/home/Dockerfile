@@ -67,3 +67,6 @@ RUN python3 -m pip install --no-cache-dir mujoco pygame
 
 # ===== MuJoCo runtime path for unitree_mujoco C++ simulator =====
 ENV LD_LIBRARY_PATH=/workspace/external/unitree_mujoco/simulate/mujoco/lib:${LD_LIBRARY_PATH}
+
+# Added for RGB-D RealSense camera support
+RUN python3 -m pip install --no-cache-dir pyrealsense2

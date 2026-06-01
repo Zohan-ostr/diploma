@@ -22,3 +22,4 @@ human_pose_estimation/videos/**/**/*.mp4
 
 workspace/upper_body_teleop_home_full/unitree_ros2
 workspace/upper_body_teleop_home_full/external
+workspace_2/

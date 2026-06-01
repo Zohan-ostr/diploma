@@ -23,6 +23,7 @@ setup(
         'console_scripts': [
             'mock_pose_source = home_pipeline.mock_pose_source:main',
             'webcam_mediapipe_node = home_pipeline.webcam_mediapipe_node:main',
+            'realsense_mediapipe_node = home_pipeline.realsense_mediapipe_node:main',
             'retarget_node = home_pipeline.retarget_node:main',
             'joint_slider_panel = home_pipeline.joint_slider_panel:main',
         ],

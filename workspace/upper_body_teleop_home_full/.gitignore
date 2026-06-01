@@ -8,3 +8,24 @@ __pycache__/
 *.mcap
 rosbag2_*/
 .env
+
+# Local run/build artifacts
+logs/
+_legacy_not_used_*/
+_cleanup_not_used_*/
+
+# Backups
+*.bak*
+*.backup*
+*.old*
+
+# Local docs cache
+docs/from_scripts/
+
+# Logs
+logs/
+log
+
+# Logs
+logs/
+log
