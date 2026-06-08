@@ -22,9 +22,7 @@ if ros2 pkg executables home_pipeline 2>/dev/null | grep -q 'realsense_mediapipe
     -p preview_mirror:=true \
     -p depth_window:=5 \
     -p min_depth_m:=0.15 \
-    -p max_depth_m:=6.0 \
-  -p publish_camera_depth_z:=true \
-  -p camera_depth_gain:=-1.5
+    -p max_depth_m:=6.0
   exit 0
 fi
 
@@ -39,6 +37,4 @@ python3 src/home_pipeline/home_pipeline/realsense_mediapipe_node.py \
   -p preview_mirror:=true \
   -p depth_window:=5 \
   -p min_depth_m:=0.15 \
-  -p max_depth_m:=6.0 \
-  -p publish_camera_depth_z:=true \
-  -p camera_depth_gain:=-1.5
+  -p max_depth_m:=6.0

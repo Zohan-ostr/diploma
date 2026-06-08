@@ -1,15 +1,35 @@
 #!/usr/bin/env bash
 set -e
 
-source ~/diploma/workspace/upper_body_teleop_home_full/scripts/robot_h1/h1_robot_env.sh
+cd "$(dirname "$0")/../.."
+source scripts/robot_h1/h1_env.sh
 
-echo "ROS topics:"
-ros2 topic list | sort | grep -E 'pose|upper_body|lowcmd|lowstate|h1' || true
+print_h1_env
+
+echo "============================================================"
+echo " H1 6: CHECK REAL H1 TOPICS"
+echo "============================================================"
 
 echo
-echo "Pose landmarks:"
-timeout 2 ros2 topic echo /pose/landmarks --once || true
+echo "=== NODES ==="
+ros2 node list || true
 
 echo
-echo "Vector FABRIK command:"
-timeout 2 ros2 topic echo /upper_body/command_geom --once || true
+echo "=== TOPICS ==="
+ros2 topic list -t || true
+
+echo
+echo "=== /pose/landmarks ==="
+ros2 topic info /pose/landmarks -v || true
+
+echo
+echo "=== /upper_body/start_calibration ==="
+ros2 topic info /upper_body/start_calibration -v || true
+
+echo
+echo "=== /upper_body/command_geom ==="
+ros2 topic info /upper_body/command_geom -v || true
+
+echo
+echo "=== one /upper_body/command_geom sample ==="
+timeout 5 ros2 topic echo /upper_body/command_geom --once || true

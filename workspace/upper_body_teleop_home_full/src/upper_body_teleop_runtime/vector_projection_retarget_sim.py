@@ -2,8 +2,6 @@
 # -*- coding: utf-8 -*-
 
 import math
-import os
-import time
 from typing import Dict, Optional, Tuple
 
 import numpy as np
@@ -12,19 +10,6 @@ from rclpy.node import Node
 
 from std_msgs.msg import Bool
 from upper_body_msgs.msg import PoseLandmarks3D, UpperBodyCommand
-
-from unitree_sdk2py.core.channel import ChannelFactoryInitialize, ChannelPublisher, ChannelSubscriber
-from unitree_sdk2py.idl.unitree_go.msg.dds_ import LowCmd_, LowState_
-
-try:
-    from unitree_sdk2py.idl.default import unitree_go_msg_dds__LowCmd_
-except Exception:
-    unitree_go_msg_dds__LowCmd_ = None
-
-try:
-    from unitree_sdk2py.utils.crc import CRC
-except Exception:
-    CRC = None
 
 
 def clamp(x: float, lo: float, hi: float) -> float:
@@ -44,6 +29,14 @@ def project_perp(v: np.ndarray, axis: np.ndarray) -> Optional[np.ndarray]:
         return None
     p = v - float(np.dot(v, au)) * au
     return unit(p)
+
+
+
+def smoothstep(edge0: float, edge1: float, x: float) -> float:
+    if abs(edge1 - edge0) < 1e-9:
+        return 1.0 if x >= edge1 else 0.0
+    t = clamp((float(x) - edge0) / (edge1 - edge0), 0.0, 1.0)
+    return t * t * (3.0 - 2.0 * t)
 
 
 def angle_between(a: np.ndarray, b: np.ndarray) -> float:
@@ -69,213 +62,6 @@ class ExpFilter:
         else:
             self.value = self.alpha * value + (1.0 - self.alpha) * self.value
         return self.value.copy()
-
-
-
-class SDK2DirectArmWriter:
-    """
-    Direct SDK2 writer for H1 upper body.
-
-    Input q order:
-      left_pitch, left_roll, left_yaw, left_elbow,
-      right_pitch, right_roll, right_yaw, right_elbow
-
-    H1 motor ids:
-      right arm: 12, 13, 14, 15
-      left arm:  16, 17, 18, 19
-    """
-
-    ARM_MOTOR_IDS = [16, 17, 18, 19, 12, 13, 14, 15]
-
-    def __init__(
-        self,
-        *,
-        domain_id: int,
-        iface: str,
-        kp_arm: float,
-        kd_arm: float,
-        max_step_rad: float,
-        lower: np.ndarray,
-        upper: np.ndarray,
-        initial_q: np.ndarray,
-        logger,
-    ):
-        self.domain_id = int(domain_id)
-        self.iface = str(iface)
-        self.kp_arm = float(kp_arm)
-        self.kd_arm = float(kd_arm)
-        self.max_step_rad = float(max_step_rad)
-        self.lower = np.array(lower, dtype=float)
-        self.upper = np.array(upper, dtype=float)
-
-        self.logger = logger
-        self.lowstate = None
-        self.lowstate_count = 0
-        self.pub = None
-        self.crc = CRC() if CRC is not None else None
-
-        self.current_q = np.array(initial_q, dtype=float).copy()
-        self.target_q = np.array(initial_q, dtype=float).copy()
-
-        self.connected = False
-        self.connect()
-
-    def lowstate_cb(self, msg):
-        self.lowstate = msg
-        self.lowstate_count += 1
-
-    def motor_states(self):
-        if self.lowstate is None:
-            return None
-        for field in ("motor_state", "motor_state_"):
-            if hasattr(self.lowstate, field):
-                return getattr(self.lowstate, field)
-        return None
-
-    def motor_cmds(self, cmd):
-        for field in ("motor_cmd", "motor_cmd_"):
-            if hasattr(cmd, field):
-                return getattr(cmd, field)
-        return None
-
-    def make_lowcmd(self):
-        if unitree_go_msg_dds__LowCmd_ is None:
-            raise RuntimeError(
-                "unitree_go_msg_dds__LowCmd_ not found. "
-                "Cannot create default LowCmd for unitree_go IDL."
-            )
-        return unitree_go_msg_dds__LowCmd_()
-
-    def connect(self):
-        self.logger.info("============================================================")
-        self.logger.info("SDK2 DIRECT ARM WRITER")
-        self.logger.info(f"domain_id:        {self.domain_id}")
-        self.logger.info(f"iface:            {self.iface}")
-        self.logger.info(f"kp_arm / kd_arm:  {self.kp_arm} / {self.kd_arm}")
-        self.logger.info(f"sdk_max_step_rad: {self.max_step_rad}")
-        self.logger.info(f"arm motor ids:    {self.ARM_MOTOR_IDS}")
-        self.logger.info("============================================================")
-
-        ChannelFactoryInitialize(self.domain_id, self.iface)
-
-        sub = ChannelSubscriber("rt/lowstate", LowState_)
-        sub.Init(self.lowstate_cb, 10)
-
-        self.logger.info("Waiting for rt/lowstate...")
-        t0 = time.time()
-        while self.lowstate is None and time.time() - t0 < 5.0:
-            time.sleep(0.05)
-
-        if self.lowstate is None:
-            raise RuntimeError("No rt/lowstate received. Check UNITREE_NET_IFACE / UNITREE_DOMAIN_ID.")
-
-        states = self.motor_states()
-        if states is None:
-            raise RuntimeError("Cannot access lowstate.motor_state")
-
-        # Start from actual arm state, not from an artificial pose.
-        q = []
-        for motor_id in self.ARM_MOTOR_IDS:
-            q.append(float(getattr(states[motor_id], "q", 0.0)))
-
-        self.current_q = np.clip(np.array(q, dtype=float), self.lower, self.upper)
-        self.target_q = self.current_q.copy()
-
-        self.logger.info(
-            "initial arm q from lowstate: "
-            + ", ".join(f"{v:+.3f}" for v in self.current_q)
-        )
-
-        self.pub = ChannelPublisher("rt/lowcmd", LowCmd_)
-        self.pub.Init()
-
-        self.connected = True
-        self.logger.info("SDK2 direct writer ready")
-
-    def set_target(self, q: np.ndarray):
-        q = np.array(q, dtype=float)
-        self.target_q = np.clip(q, self.lower, self.upper)
-
-    def init_cmd_base(self, cmd):
-        if hasattr(cmd, "head") and len(cmd.head) >= 2:
-            cmd.head[0] = 0xFE
-            cmd.head[1] = 0xEF
-
-        if hasattr(cmd, "level_flag"):
-            cmd.level_flag = 0xFF
-
-        if hasattr(cmd, "gpio"):
-            cmd.gpio = 0
-
-    def step_current_q(self):
-        delta = self.target_q - self.current_q
-        delta = np.clip(delta, -self.max_step_rad, self.max_step_rad)
-        self.current_q = np.clip(self.current_q + delta, self.lower, self.upper)
-
-    def fill_cmd_from_lowstate(self, cmd):
-        states = self.motor_states()
-        motor_cmd = self.motor_cmds(cmd)
-
-        if states is None or motor_cmd is None:
-            return False
-
-        n = min(len(states), len(motor_cmd))
-
-        # Non-arm motors: do not actively control.
-        for i in range(n):
-            ms = states[i]
-            mc = motor_cmd[i]
-
-            if hasattr(mc, "mode"):
-                mc.mode = 0x00
-            if hasattr(mc, "q"):
-                mc.q = float(getattr(ms, "q", 0.0))
-            if hasattr(mc, "dq"):
-                mc.dq = 0.0
-            if hasattr(mc, "kp"):
-                mc.kp = 0.0
-            if hasattr(mc, "kd"):
-                mc.kd = 0.0
-            if hasattr(mc, "tau"):
-                mc.tau = 0.0
-
-        # Arms: direct position control.
-        for q_idx, motor_id in enumerate(self.ARM_MOTOR_IDS):
-            if motor_id >= n:
-                continue
-
-            mc = motor_cmd[motor_id]
-            q = float(self.current_q[q_idx])
-
-            if hasattr(mc, "mode"):
-                mc.mode = 0x01
-            if hasattr(mc, "q"):
-                mc.q = q
-            if hasattr(mc, "dq"):
-                mc.dq = 0.0
-            if hasattr(mc, "kp"):
-                mc.kp = self.kp_arm
-            if hasattr(mc, "kd"):
-                mc.kd = self.kd_arm
-            if hasattr(mc, "tau"):
-                mc.tau = 0.0
-
-        if self.crc is not None and hasattr(cmd, "crc"):
-            cmd.crc = self.crc.Crc(cmd)
-
-        return True
-
-    def publish_once(self):
-        if not self.connected:
-            return
-
-        self.step_current_q()
-
-        cmd = self.make_lowcmd()
-        self.init_cmd_base(cmd)
-
-        if self.fill_cmd_from_lowstate(cmd):
-            self.pub.Write(cmd)
 
 
 class VectorFabrikRetarget(Node):
@@ -323,7 +109,7 @@ class VectorFabrikRetarget(Node):
     }
 
     def __init__(self):
-        super().__init__("vector_fabrik_retarget")
+        super().__init__("vector_projection_retarget_sim")
 
         self.declare_parameter("input_topic", "/pose/landmarks")
         self.declare_parameter("output_topic", "/upper_body/command_geom")
@@ -345,6 +131,31 @@ class VectorFabrikRetarget(Node):
         self.declare_parameter("pitch_window", 1.30)
         self.declare_parameter("roll_window", 1.60)
 
+        # Двухэтапный сегментный поиск pitch/roll.
+        # 1 этап: вся допустимая область pitch/roll делится на 10x10 сегментов.
+        # 2 этап: область вокруг лучшего результата +- половина грубого шага
+        #         снова делится на 10x10 сегментов.
+        # Итого: 200 проверок ПЗК на одну руку.
+        self.declare_parameter("segment_pr_segments", 10)
+        self.declare_parameter("segment_pr_continuity_weight", 0.002)
+
+        # Параметры нового проекционного расчёта pitch/roll.
+        self.declare_parameter("projection_pitch_min_norm", 0.12)
+        self.declare_parameter("projection_pitch_full_norm", 0.35)
+        self.declare_parameter("projection_pitch_gain", 1.0)
+        self.declare_parameter("projection_roll_gain", 1.0)
+
+        # Инверсия оси Z на входе нового проекционного алгоритма.
+        # Важно: инвертируем все точки, чтобы forward/back одинаково
+        # исправились для pitch, elbow и yaw.
+        self.declare_parameter("projection_input_z_sign", -1.0)
+
+        # Жёсткие зоны для положений "рука ровно вниз" и "рука ровно вверх".
+        # Если upper-arm почти совпадает с осью Y, roll принудительно 0,
+        # чтобы рука не уходила внутрь корпуса из-за шума X.
+        self.declare_parameter("projection_vertical_snap_y", 0.92)
+        self.declare_parameter("projection_roll_x_deadzone", 0.08)
+
         # Если оператор поднимает руку вверх или текущая модель руки
         # плохо совпадает с направлением shoulder->elbow, локального окна
         # вокруг предыдущего положения может не хватить. В этом случае
@@ -358,6 +169,13 @@ class VectorFabrikRetarget(Node):
         self.declare_parameter("upper_continuity_weight", 0.015)
         self.declare_parameter("yaw_direction_weight", 1.0)
         self.declare_parameter("yaw_continuity_weight", 0.05)
+
+        # Двухэтапный сегментный поиск shoulder_yaw.
+        # Грубо: 10 проверок по всей зоне yaw.
+        # Уточнение: 10 проверок вокруг лучшего значения.
+        # Итого: 20 проверок yaw на одну руку.
+        self.declare_parameter("segment_yaw_segments", 10)
+        self.declare_parameter("segment_yaw_continuity_weight", 0.01)
 
         self.declare_parameter("pitch_geom_gain", 1.0)
 
@@ -378,26 +196,6 @@ class VectorFabrikRetarget(Node):
         self.declare_parameter("elbow_max_step", 0.180)
 
         self.declare_parameter("standard_z_sign", 1.0)
-
-        # Если camera node уже публикует:
-        #   X/Y — в body frame,
-        #   Z   — camera depth относительно плеча,
-        # то retarget не должен заново строить body-frame.
-        self.declare_parameter("use_input_frame_direct", True)
-
-        # Явная инверсия входной глубины.
-        # Именно это нужно, если standard_z_sign не влияет из-за auto-forward.
-        self.declare_parameter("input_z_sign", -1.0)
-
-        # Direct SDK2 output.
-        # ROS is used only for input landmarks and calibration trigger.
-        # Arm commands are sent directly to rt/lowcmd.
-        self.declare_parameter("unitree_net_iface", os.environ.get("UNITREE_NET_IFACE", "enx00e04c36022c"))
-        self.declare_parameter("unitree_domain_id", int(os.environ.get("UNITREE_DOMAIN_ID", "0")))
-        self.declare_parameter("sdk_control_hz", 250.0)
-        self.declare_parameter("kp_arm", 60.0)
-        self.declare_parameter("kd_arm", 1.5)
-        self.declare_parameter("sdk_max_step_rad", 0.012)
 
         # Совместимость со старым launcher-скриптом.
         # Эти параметры были в старом sim_geometric_retarget_old_with_tpose_yaw.py.
@@ -430,6 +228,17 @@ class VectorFabrikRetarget(Node):
         self.pitch_window = float(self.get_parameter("pitch_window").value)
         self.roll_window = float(self.get_parameter("roll_window").value)
 
+        self.segment_pr_segments = int(self.get_parameter("segment_pr_segments").value)
+        self.segment_pr_continuity_weight = float(self.get_parameter("segment_pr_continuity_weight").value)
+
+        self.projection_pitch_min_norm = float(self.get_parameter("projection_pitch_min_norm").value)
+        self.projection_pitch_full_norm = float(self.get_parameter("projection_pitch_full_norm").value)
+        self.projection_pitch_gain = float(self.get_parameter("projection_pitch_gain").value)
+        self.projection_roll_gain = float(self.get_parameter("projection_roll_gain").value)
+        self.projection_input_z_sign = float(self.get_parameter("projection_input_z_sign").value)
+        self.projection_vertical_snap_y = float(self.get_parameter("projection_vertical_snap_y").value)
+        self.projection_roll_x_deadzone = float(self.get_parameter("projection_roll_x_deadzone").value)
+
         self.enable_global_upper_search = bool(self.get_parameter("enable_global_upper_search").value)
         self.upper_global_search_dot_threshold = float(
             self.get_parameter("upper_global_search_dot_threshold").value
@@ -442,6 +251,9 @@ class VectorFabrikRetarget(Node):
         self.upper_continuity_weight = float(self.get_parameter("upper_continuity_weight").value)
         self.yaw_direction_weight = float(self.get_parameter("yaw_direction_weight").value)
         self.yaw_continuity_weight = float(self.get_parameter("yaw_continuity_weight").value)
+
+        self.segment_yaw_segments = int(self.get_parameter("segment_yaw_segments").value)
+        self.segment_yaw_continuity_weight = float(self.get_parameter("segment_yaw_continuity_weight").value)
 
         self.pitch_geom_gain = float(self.get_parameter("pitch_geom_gain").value)
 
@@ -462,15 +274,6 @@ class VectorFabrikRetarget(Node):
         self.elbow_max_step = float(self.get_parameter("elbow_max_step").value)
 
         self.standard_z_sign = float(self.get_parameter("standard_z_sign").value)
-        self.use_input_frame_direct = bool(self.get_parameter("use_input_frame_direct").value)
-        self.input_z_sign = float(self.get_parameter("input_z_sign").value)
-
-        self.unitree_net_iface = str(self.get_parameter("unitree_net_iface").value)
-        self.unitree_domain_id = int(self.get_parameter("unitree_domain_id").value)
-        self.sdk_control_hz = float(self.get_parameter("sdk_control_hz").value)
-        self.kp_arm = float(self.get_parameter("kp_arm").value)
-        self.kd_arm = float(self.get_parameter("kd_arm").value)
-        self.sdk_max_step_rad = float(self.get_parameter("sdk_max_step_rad").value)
 
         self.filters: Dict[str, ExpFilter] = {}
         self.q_filter = ExpFilter(self.joint_alpha)
@@ -492,35 +295,19 @@ class VectorFabrikRetarget(Node):
         }
 
         self.msg_count = 0
-        self.last_input_frame_id = ""
 
-        self.sdk_writer = SDK2DirectArmWriter(
-            domain_id=self.unitree_domain_id,
-            iface=self.unitree_net_iface,
-            kp_arm=self.kp_arm,
-            kd_arm=self.kd_arm,
-            max_step_rad=self.sdk_max_step_rad,
-            lower=self.LOWER,
-            upper=self.UPPER,
-            initial_q=self.TPOSE_Q,
-            logger=self.get_logger(),
-        )
-
+        self.pub = self.create_publisher(UpperBodyCommand, self.output_topic, 10)
         self.sub = self.create_subscription(PoseLandmarks3D, self.input_topic, self.on_landmarks, 10)
         self.calib_sub = self.create_subscription(Bool, self.calibration_topic, self.on_calibration, 10)
-
-        # Retarget computes a new target at 30 Hz.
-        # SDK2 writer continuously sends lowcmd at sdk_control_hz.
         self.timer = self.create_timer(1.0 / 30.0, self.on_timer)
-        self.sdk_timer = self.create_timer(1.0 / self.sdk_control_hz, self.sdk_writer.publish_once)
 
         self.get_logger().info("============================================================")
-        self.get_logger().info("VECTOR FABRIK RETARGET DIRECT SDK2")
+        self.get_logger().info("VECTOR PROJECTION RETARGET SIM")
         self.get_logger().info(f"input_topic:   {self.input_topic}")
-        self.get_logger().info("output:        direct SDK2 rt/lowcmd")
-        self.get_logger().info("stage 1: FABRIK elbow => shoulder_pitch + shoulder_roll")
+        self.get_logger().info(f"output_topic:  {self.output_topic}")
+        self.get_logger().info("stage 1: two-stage segmented FK search => shoulder_pitch + shoulder_roll")
         self.get_logger().info("stage 2: elbow_pitch = angle(shoulder->elbow, elbow->wrist)")
-        self.get_logger().info("stage 3: FABRIK wrist => shoulder_yaw only")
+        self.get_logger().info("stage 3: two-stage segmented FK search => shoulder_yaw")
         self.get_logger().info("T-pose is held until calibration")
         self.get_logger().info("============================================================")
 
@@ -632,34 +419,15 @@ class VectorFabrikRetarget(Node):
         return pts
 
     def make_points(self, raw):
-        if (
-            self.use_input_frame_direct
-            and self.last_input_frame_id == "body_pelvis_xy_camera_depth_z"
-        ):
-            # Camera node уже отдал:
-            #   x/y — координаты в body frame,
-            #   z   — глубина из RealSense относительно плеча.
-            # Поэтому не строим body-frame повторно.
-            pts_raw = {}
-            for name, p in raw.items():
-                v = np.array(p, dtype=float).copy()
-                v[2] = self.input_z_sign * float(v[2])
-                pts_raw[name] = v
+        pts_raw = self.standardize_points_to_body_frame(raw)
 
-            if self.msg_count % 60 == 0:
-                try:
-                    self.get_logger().info(
-                        "DIRECT input frame Z: "
-                        f"sign={self.input_z_sign:+.1f}, "
-                        f"L_elbow_z={pts_raw.get('left_elbow', [0,0,0])[2]:+.3f}, "
-                        f"L_wrist_z={pts_raw.get('left_wrist', [0,0,0])[2]:+.3f}, "
-                        f"R_elbow_z={pts_raw.get('right_elbow', [0,0,0])[2]:+.3f}, "
-                        f"R_wrist_z={pts_raw.get('right_wrist', [0,0,0])[2]:+.3f}"
-                    )
-                except Exception:
-                    pass
-        else:
-            pts_raw = self.standardize_points_to_body_frame(raw)
+        # Новый алгоритм pitch/roll/yaw должен видеть одинаковую ось Z.
+        # Поэтому forward/back исправляем здесь, до построения векторов руки.
+        if self.projection_input_z_sign != 1.0:
+            for name, p in list(pts_raw.items()):
+                v = np.array(p, dtype=float).copy()
+                v[2] = self.projection_input_z_sign * float(v[2])
+                pts_raw[name] = v
 
         pts = {}
         for name, p in pts_raw.items():
@@ -676,11 +444,14 @@ class VectorFabrikRetarget(Node):
         return all(vis.get(name, 0.0) >= self.min_visibility for name in required)
 
     def publish_q(self, q: np.ndarray, frame_id: str):
-        # Direct SDK2 output.
-        # The algorithm still computes the same 8 joint angles,
-        # but instead of publishing UpperBodyCommand through ROS sender,
-        # it updates the SDK2 lowcmd target.
-        self.sdk_writer.set_target(q)
+        msg = UpperBodyCommand()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = frame_id
+        msg.joint_names = list(self.JOINT_NAMES)
+        msg.position = [float(v) for v in q]
+        msg.confidence = [1.0 for _ in q]
+        msg.valid = True
+        self.pub.publish(msg)
 
     def smooth_publish_tpose(self):
         self.publish_smoothed(self.TPOSE_Q, "vector_fabrik_tpose")
@@ -744,16 +515,23 @@ class VectorFabrikRetarget(Node):
 
     def search_pitch_roll_for_elbow(self, side: str, desired_upper_u: np.ndarray) -> Tuple[float, float, np.ndarray]:
         """
-        FABRIK-like elbow stage.
+        Двухэтапный сегментный поиск shoulder_pitch и shoulder_roll.
 
-        Основной режим:
-          pitch/roll ищутся в окне вокруг предыдущего положения.
+        Цель:
+          подобрать pitch/roll так, чтобы локоть робота оказался как можно
+          ближе к целевому положению локтя оператора.
 
-        Расширенный режим:
-          если оператор поднимает руку вверх или текущая модель верхнего
-          звена плохо совпадает с направлением shoulder->elbow, включается
-          поиск по всему допустимому диапазону pitch/roll. Это нужно, чтобы
-          робот мог поднять руки полностью вверх, а не застревал около T-позы.
+        Этап 1:
+          вся допустимая область pitch/roll делится на 10x10 сегментов;
+          в центре каждого сегмента выполняется ПЗК и оценивается ошибка локтя.
+
+        Этап 2:
+          вокруг лучшего результата берётся область +- половина грубого шага;
+          эта область снова делится на 10x10 сегментов;
+          снова выполняется ПЗК и выбирается лучший результат.
+
+        На одну руку:
+          100 проверок на грубом этапе + 100 проверок на уточнении.
         """
         desired = unit(desired_upper_u)
         if desired is None:
@@ -773,142 +551,133 @@ class VectorFabrikRetarget(Node):
         prev_pitch = float(self.last_q[pitch_idx])
         prev_roll = float(self.last_q[roll_idx])
 
-        prev_model = self.model_upper_dir(side, prev_pitch, prev_roll)
-        prev_dot = -1.0
-        if prev_model is not None:
-            prev_dot = clamp(float(np.dot(prev_model, desired)), -1.0, 1.0)
+        nseg = max(2, int(self.segment_pr_segments))
 
-        # В локальном базисе Y направлена вверх. Если desired[1] положительный,
-        # локоть оператора находится выше плеча, то есть рука поднимается вверх.
-        arm_is_up = float(desired[1]) > self.upper_arm_up_y_threshold
-        model_is_bad = prev_dot < self.upper_global_search_dot_threshold
+        target_elbow = desired * max(1e-6, self.robot_upper_len)
 
-        use_global = bool(self.enable_global_upper_search and (arm_is_up or model_is_bad))
+        def centers(lo: float, hi: float, n: int):
+            lo = float(lo)
+            hi = float(hi)
+            if hi < lo:
+                lo, hi = hi, lo
+            step = (hi - lo) / max(1, n)
+            values = [lo + (i + 0.5) * step for i in range(n)]
+            return values, step
 
-        if use_global:
-            pitch_lo, pitch_hi = pitch_lo_abs, pitch_hi_abs
-            roll_lo, roll_hi = roll_lo_abs, roll_hi_abs
-        else:
-            pitch_lo = clamp(prev_pitch - self.pitch_window, pitch_lo_abs, pitch_hi_abs)
-            pitch_hi = clamp(prev_pitch + self.pitch_window, pitch_lo_abs, pitch_hi_abs)
+        def eval_candidate(pitch_q: float, roll_q: float):
+            model_dir = self.model_upper_dir(side, float(pitch_q), float(roll_q))
+            if model_dir is None:
+                return None
 
-            roll_lo = clamp(prev_roll - self.roll_window, roll_lo_abs, roll_hi_abs)
-            roll_hi = clamp(prev_roll + self.roll_window, roll_lo_abs, roll_hi_abs)
+            # ПЗК для локтя:
+            # shoulder считается началом координат,
+            # elbow = direction(pitch, roll) * длина верхнего звена робота.
+            model_elbow = model_dir * max(1e-6, self.robot_upper_len)
 
-        pitch_values = np.linspace(pitch_lo, pitch_hi, max(5, self.pitch_grid))
-        roll_values = np.linspace(roll_lo, roll_hi, max(5, self.roll_grid))
+            dist_err = float(np.linalg.norm(model_elbow - target_elbow))
 
-        # Важные дополнительные кандидаты для верхней позы.
-        # Они помогают не пропустить конфигурации, где плечо почти вертикально вверх.
-        extra_pitch = [
-            prev_pitch,
-            self.BASE_Q[pitch_idx],
+            # Небольшой штраф за резкий уход от прошлого положения.
+            # Он не заменяет основной критерий расстояния, а только стабилизирует
+            # выбор при близких по качеству решениях.
+            continuity = self.segment_pr_continuity_weight * (
+                (float(pitch_q) - prev_pitch) ** 2
+                + (float(roll_q) - prev_roll) ** 2
+            )
+
+            cost = dist_err + continuity
+            return cost, dist_err, model_dir
+
+        def search_area(pitch_lo, pitch_hi, roll_lo, roll_hi):
+            pitch_values, pitch_step = centers(pitch_lo, pitch_hi, nseg)
+            roll_values, roll_step = centers(roll_lo, roll_hi, nseg)
+
+            best = None
+
+            for pitch_q in pitch_values:
+                pitch_q = clamp(float(pitch_q), pitch_lo_abs, pitch_hi_abs)
+
+                for roll_q in roll_values:
+                    roll_q = clamp(float(roll_q), roll_lo_abs, roll_hi_abs)
+
+                    r = eval_candidate(pitch_q, roll_q)
+                    if r is None:
+                        continue
+
+                    cost, dist_err, model_dir = r
+
+                    if best is None or cost < best["cost"]:
+                        best = {
+                            "pitch": pitch_q,
+                            "roll": roll_q,
+                            "dir": model_dir,
+                            "cost": cost,
+                            "dist": dist_err,
+                            "pitch_step": pitch_step,
+                            "roll_step": roll_step,
+                        }
+
+            return best
+
+        # ------------------------------------------------------------
+        # Этап 1. Грубый поиск по всей допустимой области.
+        # ------------------------------------------------------------
+        coarse = search_area(
+            pitch_lo_abs,
             pitch_hi_abs,
-            pitch_hi_abs * 0.90,
-            pitch_hi_abs * 0.75,
-            1.57,
-            2.10,
-            2.50,
-        ]
-        extra_roll = [
-            prev_roll,
-            0.0,
             roll_lo_abs,
             roll_hi_abs,
-            0.15 if side == "left" else -0.15,
-            0.35 if side == "left" else -0.35,
-            0.70 if side == "left" else -0.70,
-        ]
-
-        pitch_candidates = list(pitch_values) + [
-            clamp(v, pitch_lo_abs, pitch_hi_abs) for v in extra_pitch
-        ]
-        roll_candidates = list(roll_values) + [
-            clamp(v, roll_lo_abs, roll_hi_abs) for v in extra_roll
-        ]
-
-        best_pitch = prev_pitch
-        best_roll = prev_roll
-        best_dir = desired
-        best_cost = 1e9
-        best_dot = -1.0
-
-        for pitch_q in pitch_candidates:
-            for roll_q in roll_candidates:
-                model = self.model_upper_dir(side, float(pitch_q), float(roll_q))
-                if model is None:
-                    continue
-
-                dot_v = clamp(float(np.dot(model, desired)), -1.0, 1.0)
-                direction_error = 1.0 - dot_v
-
-                continuity = self.upper_continuity_weight * (
-                    (float(pitch_q) - prev_pitch) ** 2
-                    + (float(roll_q) - prev_roll) ** 2
-                )
-
-                # Если рука направлена вверх, уменьшаем штраф за удаление
-                # от предыдущей позы. Иначе алгоритм предпочитает остаться
-                # около T-позы вместо полноценного подъема руки.
-                if arm_is_up:
-                    continuity *= 0.25
-
-                cost = self.upper_direction_weight * direction_error + continuity
-
-                if cost < best_cost:
-                    best_cost = cost
-                    best_dot = dot_v
-                    best_pitch = float(pitch_q)
-                    best_roll = float(roll_q)
-                    best_dir = model
-
-        # Локальное уточнение вокруг найденной пары, но без большого
-        # удорожания вычислений.
-        pitch_span = max(0.08, abs(pitch_hi - pitch_lo) / max(1, self.pitch_grid - 1))
-        roll_span = max(0.08, abs(roll_hi - roll_lo) / max(1, self.roll_grid - 1))
-
-        pitch_refined = np.linspace(
-            clamp(best_pitch - 0.5 * pitch_span, pitch_lo_abs, pitch_hi_abs),
-            clamp(best_pitch + 0.5 * pitch_span, pitch_lo_abs, pitch_hi_abs),
-            7,
-        )
-        roll_refined = np.linspace(
-            clamp(best_roll - 0.5 * roll_span, roll_lo_abs, roll_hi_abs),
-            clamp(best_roll + 0.5 * roll_span, roll_lo_abs, roll_hi_abs),
-            7,
         )
 
-        for pitch_q in pitch_refined:
-            for roll_q in roll_refined:
-                model = self.model_upper_dir(side, float(pitch_q), float(roll_q))
-                if model is None:
-                    continue
+        if coarse is None:
+            return prev_pitch, prev_roll, desired
 
-                dot_v = clamp(float(np.dot(model, desired)), -1.0, 1.0)
-                direction_error = 1.0 - dot_v
+        # ------------------------------------------------------------
+        # Этап 2. Уточнение вокруг лучшего результата.
+        # Берём +- половина шага грубого этапа.
+        # ------------------------------------------------------------
+        refine_pitch_lo = clamp(
+            coarse["pitch"] - 0.5 * coarse["pitch_step"],
+            pitch_lo_abs,
+            pitch_hi_abs,
+        )
+        refine_pitch_hi = clamp(
+            coarse["pitch"] + 0.5 * coarse["pitch_step"],
+            pitch_lo_abs,
+            pitch_hi_abs,
+        )
 
-                continuity = self.upper_continuity_weight * (
-                    (float(pitch_q) - prev_pitch) ** 2
-                    + (float(roll_q) - prev_roll) ** 2
-                )
-                if arm_is_up:
-                    continuity *= 0.25
+        refine_roll_lo = clamp(
+            coarse["roll"] - 0.5 * coarse["roll_step"],
+            roll_lo_abs,
+            roll_hi_abs,
+        )
+        refine_roll_hi = clamp(
+            coarse["roll"] + 0.5 * coarse["roll_step"],
+            roll_lo_abs,
+            roll_hi_abs,
+        )
 
-                cost = self.upper_direction_weight * direction_error + continuity
+        refined = search_area(
+            refine_pitch_lo,
+            refine_pitch_hi,
+            refine_roll_lo,
+            refine_roll_hi,
+        )
 
-                if cost < best_cost:
-                    best_cost = cost
-                    best_dot = dot_v
-                    best_pitch = float(pitch_q)
-                    best_roll = float(roll_q)
-                    best_dir = model
+        best = refined if refined is not None else coarse
 
-        if self.msg_count % 60 == 0:
-            mode = "GLOBAL" if use_global else "LOCAL"
+        best_pitch = float(best["pitch"])
+        best_roll = float(best["roll"])
+        best_dir = best["dir"]
+
+        if self.msg_count % 30 == 0:
+            dot_v = clamp(float(np.dot(best_dir, desired)), -1.0, 1.0)
             self.get_logger().info(
-                f"{side} elbow FABRIK {mode}: "
-                f"pitch={best_pitch:.3f}, roll={best_roll:.3f}, "
-                f"dot={best_dot:.3f}, desired_y={desired[1]:.3f}, prev_dot={prev_dot:.3f}"
+                f"{side} two-stage pitch/roll search: "
+                f"pitch={best_pitch:+.3f}, roll={best_roll:+.3f}, "
+                f"elbow_dist={best['dist']:.4f}, dot={dot_v:.3f}, "
+                f"coarse_dist={coarse['dist']:.4f}, "
+                f"iters={nseg*nseg*2}"
             )
 
         return best_pitch, best_roll, best_dir
@@ -980,63 +749,243 @@ class VectorFabrikRetarget(Node):
         self,
         side: str,
         robot_upper_u: np.ndarray,
-        human_fore_u: np.ndarray,
+        desired_upper_u: np.ndarray,
+        desired_fore_u: np.ndarray,
         bend_angle: float,
     ) -> float:
         """
-        FABRIK wrist stage.
+        Двухэтапный поиск shoulder_yaw по реальной геометрии локтя и кисти.
 
-        pitch and roll are fixed.
-        elbow_pitch is fixed by bend_angle.
-        Only shoulder_yaw is searched.
+        Важно:
+          robot_upper_u — уже рассчитанное направление плеча робота после pitch/roll.
+          desired_upper_u — направление shoulder->elbow оператора.
+          desired_fore_u — направление elbow->wrist оператора.
+
+        Цель yaw:
+          не просто повторить направление предплечья,
+          а из уже найденного локтя робота попасть кистью в целевую точку.
+
+        Геометрия:
+          S = (0, 0, 0)
+          E_target = desired_upper_u * robot_upper_len
+          W_target = E_target + desired_fore_u * robot_fore_len
+
+          E_robot = robot_upper_u * robot_upper_len
+          W_candidate = E_robot + fore_candidate(yaw) * robot_fore_len
+
+        Поиск:
+          10 грубых проверок по всей зоне yaw;
+          10 уточняющих проверок вокруг лучшего yaw.
         """
-        target = unit(human_fore_u)
-        if target is None:
-            return self.last_q[2] if side == "left" else self.last_q[6]
+        def vec3(x, fallback):
+            try:
+                a = np.asarray(x, dtype=float).reshape(-1)
+                if a.size >= 3:
+                    v = a[:3].astype(float)
+                    if np.all(np.isfinite(v)):
+                        return v
+            except Exception:
+                pass
+            return np.array(fallback, dtype=float)
+
+        robot_upper_u = unit(vec3(robot_upper_u, [0.0, -1.0, 0.0]))
+        desired_upper_u = unit(vec3(desired_upper_u, [0.0, -1.0, 0.0]))
+        desired_fore_u = unit(vec3(desired_fore_u, [0.0, -1.0, 0.0]))
+
+        if robot_upper_u is None:
+            robot_upper_u = np.array([0.0, -1.0, 0.0], dtype=float)
+        if desired_upper_u is None:
+            desired_upper_u = np.array([0.0, -1.0, 0.0], dtype=float)
+        if desired_fore_u is None:
+            desired_fore_u = np.array([0.0, -1.0, 0.0], dtype=float)
 
         if side == "left":
-            prev_yaw = float(self.last_q[2])
-            yaw_lo, yaw_hi = min(self.left_yaw_down, self.left_yaw_up), max(self.left_yaw_down, self.left_yaw_up)
+            yaw_idx = 2
+            yaw_a = float(self.left_yaw_down)
+            yaw_b = float(self.left_yaw_up)
+            yaw_lo_abs = float(self.LOWER[2])
+            yaw_hi_abs = float(self.UPPER[2])
         else:
-            prev_yaw = float(self.last_q[6])
-            yaw_lo, yaw_hi = min(self.right_yaw_down, self.right_yaw_up), max(self.right_yaw_down, self.right_yaw_up)
+            yaw_idx = 6
+            yaw_a = float(self.right_yaw_down)
+            yaw_b = float(self.right_yaw_up)
+            yaw_lo_abs = float(self.LOWER[6])
+            yaw_hi_abs = float(self.UPPER[6])
 
-        yaw_values = np.linspace(yaw_lo, yaw_hi, max(9, self.yaw_grid))
+        yaw_lo = max(min(yaw_a, yaw_b), yaw_lo_abs)
+        yaw_hi = min(max(yaw_a, yaw_b), yaw_hi_abs)
 
-        bend = clamp(float(bend_angle), 0.0, math.pi)
-        c = math.cos(bend)
-        s = math.sin(bend)
+        if yaw_hi < yaw_lo:
+            yaw_lo, yaw_hi = yaw_lo_abs, yaw_hi_abs
 
-        best_yaw = prev_yaw
-        best_cost = 1e9
-        best_dot = -1.0
+        prev_yaw = float(self.last_q[yaw_idx])
 
-        for yaw_q in yaw_values:
-            bend_dir = self.yaw_bend_dir(side, robot_upper_u, float(yaw_q))
+        try:
+            nseg = max(2, int(self.segment_yaw_segments))
+        except Exception:
+            nseg = 10
+
+        try:
+            continuity_weight = float(self.segment_yaw_continuity_weight)
+        except Exception:
+            continuity_weight = 0.01
+
+        # ------------------------------------------------------------
+        # Главная правка:
+        # target_wrist считается не от robot_upper_u, а от целевой
+        # геометрии руки оператора.
+        # ------------------------------------------------------------
+        target_elbow = self.robot_upper_len * desired_upper_u
+        target_wrist = target_elbow + self.robot_fore_len * desired_fore_u
+
+        robot_elbow = self.robot_upper_len * robot_upper_u
+
+        # Нормальная длина до цели, чтобы лог был понятнее.
+        target_dist = float(np.linalg.norm(target_wrist))
+
+        def centers(lo: float, hi: float, n: int):
+            lo = float(lo)
+            hi = float(hi)
+            if hi < lo:
+                lo, hi = hi, lo
+            step = (hi - lo) / max(1, n)
+            values = [lo + (i + 0.5) * step for i in range(n)]
+            return values, step
+
+        def make_fore_candidate(yaw_q: float):
+            """
+            Строим направление предплечья при данном yaw.
+
+            robot_upper_u — ось верхнего звена.
+            В плоскости, перпендикулярной robot_upper_u, yaw выбирает
+            направление сгиба. bend_angle задаёт величину сгиба локтя.
+            """
+            axis = unit(robot_upper_u)
+            if axis is None:
+                axis = np.array([0.0, -1.0, 0.0], dtype=float)
+
+            refs = [
+                np.array([0.0, 1.0, 0.0], dtype=float),
+                np.array([0.0, 0.0, 1.0], dtype=float),
+                np.array([1.0, 0.0, 0.0], dtype=float),
+            ]
+
+            e1 = None
+            for ref in refs:
+                cand = project_perp(ref, axis)
+                cand = unit(cand)
+                if cand is not None:
+                    e1 = cand
+                    break
+
+            if e1 is None:
+                return axis
+
+            e2 = unit(np.cross(axis, e1))
+            if e2 is None:
+                return axis
+
+            if side == "right":
+                e2 = -e2
+
+            bend_dir = (
+                math.cos(float(yaw_q)) * e1
+                + math.sin(float(yaw_q)) * e2
+            )
+            bend_dir = unit(bend_dir)
+
             if bend_dir is None:
-                continue
+                return axis
 
-            candidate_fore = unit(c * robot_upper_u + s * bend_dir)
-            if candidate_fore is None:
-                continue
+            fore = (
+                math.cos(float(bend_angle)) * axis
+                + math.sin(float(bend_angle)) * bend_dir
+            )
+            fore = unit(fore)
 
-            dot_v = clamp(float(np.dot(candidate_fore, target)), -1.0, 1.0)
-            direction_error = 1.0 - dot_v
-            continuity = self.yaw_continuity_weight * (float(yaw_q) - prev_yaw) ** 2
+            if fore is None:
+                return axis
 
-            cost = self.yaw_direction_weight * direction_error + continuity
+            return fore
 
-            if cost < best_cost:
-                best_cost = cost
-                best_dot = dot_v
-                best_yaw = float(yaw_q)
+        def eval_yaw(yaw_q: float):
+            yaw_q = clamp(float(yaw_q), yaw_lo_abs, yaw_hi_abs)
 
-        if self.msg_count % 60 == 0:
-            self.get_logger().info(
-                f"{side} wrist FABRIK yaw={best_yaw:.3f}, dot={best_dot:.3f}"
+            fore = make_fore_candidate(yaw_q)
+            if fore is None:
+                return None
+
+            candidate_wrist = robot_elbow + self.robot_fore_len * fore
+
+            wrist_err = float(np.linalg.norm(candidate_wrist - target_wrist))
+
+            # Дополнительная оценка направления оставляем только как слабую
+            # стабилизацию, основная цель — именно точка W_target.
+            dot_fore = clamp(float(np.dot(fore, desired_fore_u)), -1.0, 1.0)
+            dir_err = 1.0 - dot_fore
+
+            continuity = continuity_weight * (yaw_q - prev_yaw) ** 2
+
+            cost = (
+                1.0 * wrist_err
+                + 0.10 * dir_err
+                + continuity
             )
 
-        return best_yaw
+            return {
+                "yaw": yaw_q,
+                "fore": fore,
+                "candidate_wrist": candidate_wrist,
+                "cost": cost,
+                "wrist_err": wrist_err,
+                "dir_err": dir_err,
+                "dot": dot_fore,
+            }
+
+        def search_area(lo: float, hi: float):
+            values, step = centers(lo, hi, nseg)
+            best = None
+
+            for yaw_q in values:
+                r = eval_yaw(yaw_q)
+                if r is None:
+                    continue
+
+                if best is None or r["cost"] < best["cost"]:
+                    best = r
+                    best["step"] = step
+
+            return best
+
+        # Этап 1. Грубый поиск.
+        coarse = search_area(yaw_lo, yaw_hi)
+
+        if coarse is None:
+            return float(prev_yaw)
+
+        # Этап 2. Уточнение вокруг лучшего.
+        half_step = 0.5 * float(coarse["step"])
+
+        refine_lo = clamp(coarse["yaw"] - half_step, yaw_lo, yaw_hi)
+        refine_hi = clamp(coarse["yaw"] + half_step, yaw_lo, yaw_hi)
+
+        refined = search_area(refine_lo, refine_hi)
+        best = refined if refined is not None else coarse
+
+        if self.msg_count % 30 == 0:
+            elbow_err = float(np.linalg.norm(robot_elbow - target_elbow))
+            self.get_logger().info(
+                f"{side} two-stage yaw real-target: "
+                f"yaw={best['yaw']:+.3f}, "
+                f"wrist_err={best['wrist_err']:.4f}, "
+                f"elbow_err={elbow_err:.4f}, "
+                f"target_dist={target_dist:.4f}, "
+                f"dot_fore={best['dot']:.3f}, "
+                f"coarse_wrist_err={coarse['wrist_err']:.4f}, "
+                f"iters={nseg * 2}"
+            )
+
+        return float(best["yaw"])
 
     def collect_calibration_sample(self, pts):
         for side in ("left", "right"):
@@ -1088,7 +1037,7 @@ class VectorFabrikRetarget(Node):
         elbow_q, bend_angle = self.solve_elbow_pitch(side, upper_u, fore_u)
 
         # 3) FABRIK for wrist: yaw only.
-        yaw_q = self.search_yaw_for_wrist(side, robot_upper_u, fore_u, bend_angle)
+        yaw_q = self.search_yaw_for_wrist(side, robot_upper_u, upper_u, fore_u, bend_angle)
 
         return pitch_q, roll_q, yaw_q, elbow_q
 
@@ -1107,7 +1056,6 @@ class VectorFabrikRetarget(Node):
 
     def on_landmarks(self, msg: PoseLandmarks3D):
         self.msg_count += 1
-        self.last_input_frame_id = str(getattr(msg.header, "frame_id", ""))
 
         if hasattr(msg, "valid") and not msg.valid:
             return

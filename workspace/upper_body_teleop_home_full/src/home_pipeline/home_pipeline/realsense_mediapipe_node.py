@@ -96,6 +96,16 @@ class RealSenseMediaPipeNode(Node):
         self.min_depth_m = float(self.declare_parameter("min_depth_m", 0.15).value)
         self.max_depth_m = float(self.declare_parameter("max_depth_m", 6.0).value)
 
+        # Z в /pose/landmarks публикуется строго из RealSense depth map,
+        # а не из body-frame нормали. Это убирает инверсии глубины при
+        # изменении ориентации тела.
+        self.publish_camera_depth_z = bool(
+            self.declare_parameter("publish_camera_depth_z", True).value
+        )
+        self.camera_depth_gain = float(
+            self.declare_parameter("camera_depth_gain", 1.5).value
+        )
+
         self.pub = self.create_publisher(PoseLandmarks3D, "/pose/landmarks", 10)
         self.control_pub = self.create_publisher(String, "/teleop/control", 10)
 
@@ -252,10 +262,52 @@ class RealSenseMediaPipeNode(Node):
 
         return body_pts
 
+
+    def apply_camera_depth_z_to_body_points(self, cam_pts: Dict[str, Vec3], body_pts: Dict[str, Vec3]) -> Dict[str, Vec3]:
+        """
+        X/Y остаются из body frame.
+        Z публикуется строго из RealSense depth map.
+
+        cam_pts[name][2] — это camera-Z после rs2_deproject_pixel_to_point,
+        то есть глубина из aligned depth frame.
+
+        Для каждой руки:
+          shoulder.z = 0
+          elbow.z    = (depth_elbow - depth_shoulder) * camera_depth_gain
+          wrist.z    = (depth_wrist - depth_shoulder) * camera_depth_gain
+        """
+        fixed = dict(body_pts)
+
+        for side in ("left", "right"):
+            shoulder = f"{side}_shoulder"
+            elbow = f"{side}_elbow"
+            wrist = f"{side}_wrist"
+
+            if shoulder not in cam_pts or shoulder not in fixed:
+                continue
+
+            shoulder_depth = float(cam_pts[shoulder][2])
+
+            sx, sy, _ = fixed[shoulder]
+            fixed[shoulder] = (float(sx), float(sy), 0.0)
+
+            if elbow in cam_pts and elbow in fixed:
+                ex, ey, _ = fixed[elbow]
+                ez = (float(cam_pts[elbow][2]) - shoulder_depth) * self.camera_depth_gain
+                fixed[elbow] = (float(ex), float(ey), float(ez))
+
+            if wrist in cam_pts and wrist in fixed:
+                wx, wy, _ = fixed[wrist]
+                wz = (float(cam_pts[wrist][2]) - shoulder_depth) * self.camera_depth_gain
+                fixed[wrist] = (float(wx), float(wy), float(wz))
+
+        return fixed
+
+
     def publish_pose(self, body_pts: Dict[str, Vec3], vis: Dict[str, float]):
         msg = PoseLandmarks3D()
         msg.header.stamp = self.get_clock().now().to_msg()
-        msg.header.frame_id = "body_pelvis_z_forward"
+        msg.header.frame_id = "body_pelvis_xy_camera_depth_z"
         msg.valid = True
 
         for name in MP_NAMES.values():
@@ -273,7 +325,7 @@ class RealSenseMediaPipeNode(Node):
     def publish_invalid(self):
         msg = PoseLandmarks3D()
         msg.header.stamp = self.get_clock().now().to_msg()
-        msg.header.frame_id = "body_pelvis_z_forward"
+        msg.header.frame_id = "body_pelvis_xy_camera_depth_z"
         msg.valid = False
         self.pub.publish(msg)
 
@@ -313,10 +365,18 @@ class RealSenseMediaPipeNode(Node):
             body_pts = self.to_body_frame(cam_pts)
 
             if body_pts is not None:
+                if self.publish_camera_depth_z:
+                    body_pts = self.apply_camera_depth_z_to_body_points(cam_pts, body_pts)
+
                 self.publish_pose(body_pts, vis)
                 self.draw_z(frame, body_pts, pix)
-                cv2.putText(frame, "RGB-D body frame: origin=pelvis, +Z=forward",
-                            (15, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 2)
+
+                if self.publish_camera_depth_z:
+                    cv2.putText(frame, "RGB-D: body X/Y + camera-depth Z relative to shoulder",
+                                (15, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 2)
+                else:
+                    cv2.putText(frame, "RGB-D body frame: origin=pelvis, +Z=forward",
+                                (15, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 2)
             else:
                 self.publish_invalid()
                 cv2.putText(frame, "Invalid depth for required body points",
